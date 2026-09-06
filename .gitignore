@@ -1,0 +1,44 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+*.elf
+*.bin
+*.hex
+
+# Flutter / Dart
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.pub-cache/
+**/.pub/
+**/coverage/
+**/doc/api/
+**/.widget_preview/
+**/android/app/debug
+**/android/app/profile
+**/android/app/release
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+*.swp
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+
+# C / C++ build outputs
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.log

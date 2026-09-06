@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Android Sensor BLE Transmitter</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 20px;
+      background: #121212;
+      color: #fff;
+    }
+
+    button {
+      background: #00e676;
+      color: #000;
+      border: none;
+      padding: 15px 25px;
+      font-size: 18px;
+      font-weight: bold;
+      border-radius: 8px;
+      margin-top: 15px;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      background: #555;
+      color: #888;
+    }
+
+    .card {
+      background: #1e1e1e;
+      padding: 15px;
+      margin: 15px auto;
+      border-radius: 10px;
+      max-width: 400px;
+      text-align: left;
+    }
+
+    .val {
+      font-family: monospace;
+      color: #00e676;
+    }
+
+    #status {
+      font-weight: bold;
+      font-size: 16px;
+      margin: 10px;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>Android IMU BLE Streamer</h2>
+  <p>Transmite Acelerómetro, Giroscopio y Brújula a tu ESP32-C3</p>
+
+  <div id="status" style="color: #ffb74d;">Estado: Desconectado</div>
+  <button id="btnConnect">Conectar con ESP32C3_BLE</button>
+
+  <div class="card">
+    <h3>Lectura de Sensores:</h3>
+    <p>Brújula (Heading): <span id="lblHeading" class="val">0.0°</span></p>
+    <p>Acelerómetro (m/s²):<br>
+      X: <span id="lblAccX" class="val">0.0</span> |
+      Y: <span id="lblAccY" class="val">0.0</span> |
+      Z: <span id="lblAccZ" class="val">0.0</span></p>
+    <p>Giroscopio (rad/s):<br>
+      X: <span id="lblGyrX" class="val">0.0</span> |
+      Y: <span id="lblGyrY" class="val">0.0</span> |
+      Z: <span id="lblGyrZ" class="val">0.0</span></p>
+  </div>
+
+  <script>
+    const SERVICE_UUID = '4fa1c201-1fb5-459e-8fcc-c5c9c331914b';
+    const CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+
+    let bleCharacteristic = null;
+    let sensorData = { accX: 0, accY: 0, accZ: 0, gyroX: 0, gyroY: 0, gyroZ: 0, heading: 0 };
+
+    document.getElementById('btnConnect').addEventListener('click', async () => {
+      try {
+        document.getElementById('status').innerText = 'Buscando ESP32C3_BLE...';
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ name: 'ESP32C3_BLE' }],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        bleCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+        document.getElementById('status').innerText = '¡CONECTADO AL ESP32-C3!';
+        document.getElementById('status').style.color = '#00e676';
+
+        startSensors();
+        setInterval(sendDataToESP32, 150); // Enviar datos cada 150ms
+      } catch (err) {
+        document.getElementById('status').innerText = 'Error: ' + err.message;
+        document.getElementById('status').style.color = '#ff5252';
+      }
+    });
+
+    function startSensors() {
+      // Orientación y Brújula
+      window.addEventListener('deviceorientation', (e) => {
+        if (e.alpha !== null) {
+          sensorData.heading = (360 - e.alpha) % 360;
+          document.getElementById('lblHeading').innerText = sensorData.heading.toFixed(1) + '°';
+        }
+      });
+
+      // Acelerómetro y Giroscopio
+      window.addEventListener('devicemotion', (e) => {
+        if (e.accelerationIncludingGravity) {
+          sensorData.accX = e.accelerationIncludingGravity.x || 0;
+          sensorData.accY = e.accelerationIncludingGravity.y || 0;
+          sensorData.accZ = e.accelerationIncludingGravity.z || 0;
+
+          document.getElementById('lblAccX').innerText = sensorData.accX.toFixed(1);
+          document.getElementById('lblAccY').innerText = sensorData.accY.toFixed(1);
+          document.getElementById('lblAccZ').innerText = sensorData.accZ.toFixed(1);
+        }
+
+        if (e.rotationRate) {
+          sensorData.gyroX = e.rotationRate.beta || 0;
+          sensorData.gyroY = e.rotationRate.gamma || 0;
+          sensorData.gyroZ = e.rotationRate.alpha || 0;
+
+          document.getElementById('lblGyrX').innerText = sensorData.gyroX.toFixed(1);
+          document.getElementById('lblGyrY').innerText = sensorData.gyroY.toFixed(1);
+          document.getElementById('lblGyrZ').innerText = sensorData.gyroZ.toFixed(1);
+        }
+      });
+    }
+
+    async function sendDataToESP32() {
+      if (!bleCharacteristic) return;
+      // Formato: "accX,accY,accZ,gyroX,gyroY,gyroZ,heading"
+      const strPayload = `${sensorData.accX.toFixed(2)},${sensorData.accY.toFixed(2)},${sensorData.accZ.toFixed(2)},${sensorData.gyroX.toFixed(2)},${sensorData.gyroY.toFixed(2)},${sensorData.gyroZ.toFixed(2)},${sensorData.heading.toFixed(1)}`;
+      const encoder = new TextEncoder();
+      try {
+        await bleCharacteristic.writeValue(encoder.encode(strPayload));
+      } catch (e) {
+        console.log('Error enviando paquete:', e);
+      }
+    }
+  </script>
+</body>
+
+</html>
