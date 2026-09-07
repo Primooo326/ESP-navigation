@@ -7,6 +7,7 @@ import 'osrm_service.dart';
 
 typedef OnPacketGeneratedCallback = void Function(NavigationPacket packet);
 typedef OnReRouteRequestedCallback = void Function(LatLng currentPos);
+typedef OnVoicePromptRequestedCallback = void Function(String prompt);
 
 class NavigationEngine {
   final Distance _distanceCalculator = const Distance();
@@ -14,6 +15,8 @@ class NavigationEngine {
   OSRMRoute? _activeRoute;
   int _currentStepIndex = 0;
   bool _isNavigating = false;
+  bool _isSimulating = false;
+  Timer? _simulationTimer;
 
   Position? _currentPosition;
   double _currentHeading = 0.0;
@@ -22,19 +25,24 @@ class NavigationEngine {
   StreamSubscription<Position>? _positionSubscription;
   OnPacketGeneratedCallback? onPacketGenerated;
   OnReRouteRequestedCallback? onReRouteRequested;
+  OnVoicePromptRequestedCallback? onVoicePromptRequested;
 
   DateTime? _lastReRouteTime;
+  int _lastSpokenStepIndex = -1;
 
   final ValueNotifier<int> currentStepNotifier = ValueNotifier<int>(0);
 
   bool get isNavigating => _isNavigating;
+  bool get isSimulating => _isSimulating;
   OSRMRoute? get activeRoute => _activeRoute;
   int get currentStepIndex => _currentStepIndex;
   Position? get currentPosition => _currentPosition;
 
   void startNavigation(OSRMRoute route) {
+    stopSimulation();
     _activeRoute = route;
     _currentStepIndex = 0;
+    _lastSpokenStepIndex = -1;
     currentStepNotifier.value = 0;
     _isNavigating = true;
     if (_positionSubscription == null) {
@@ -42,10 +50,59 @@ class NavigationEngine {
     }
   }
 
+  void startSimulation(OSRMRoute route) {
+    stopNavigation();
+    _activeRoute = route;
+    _currentStepIndex = 0;
+    _lastSpokenStepIndex = -1;
+    currentStepNotifier.value = 0;
+    _isNavigating = true;
+    _isSimulating = true;
+
+    if (route.polylinePoints.isEmpty) return;
+
+    int currentPolyIdx = 0;
+    _simulationTimer?.cancel();
+    _simulationTimer = Timer.periodic(const Duration(milliseconds: 600), (timer) {
+      if (!_isNavigating || _activeRoute == null || currentPolyIdx >= _activeRoute!.polylinePoints.length) {
+        timer.cancel();
+        _isSimulating = false;
+        _emitArrivedPacket();
+        return;
+      }
+
+      LatLng currentPt = _activeRoute!.polylinePoints[currentPolyIdx];
+      currentPolyIdx++;
+
+      Position simPos = Position(
+        longitude: currentPt.longitude,
+        latitude: currentPt.latitude,
+        timestamp: DateTime.now(),
+        accuracy: 1.0,
+        altitude: 2600.0,
+        altitudeAccuracy: 1.0,
+        heading: 45.0,
+        headingAccuracy: 1.0,
+        speed: 12.5, // ~45 km/h
+        speedAccuracy: 1.0,
+      );
+
+      _processGpsPosition(simPos);
+    });
+  }
+
+  void stopSimulation() {
+    _simulationTimer?.cancel();
+    _simulationTimer = null;
+    _isSimulating = false;
+  }
+
   void stopNavigation() {
+    stopSimulation();
     _isNavigating = false;
     _activeRoute = null;
     _currentStepIndex = 0;
+    _lastSpokenStepIndex = -1;
     currentStepNotifier.value = 0;
     _positionSubscription?.cancel();
     _positionSubscription = null;
@@ -119,6 +176,12 @@ class NavigationEngine {
         userPos,
         targetStep.location,
       );
+    }
+
+    if (_lastSpokenStepIndex != upcomingIndex) {
+      _lastSpokenStepIndex = upcomingIndex;
+      String prompt = 'En ${distToStep.round()} metros, en ${targetStep.streetName}';
+      onVoicePromptRequested?.call(prompt);
     }
 
     // 3. Verificación de desvío de ruta (>60 metros fuera del trazado con cooldown de 10s)

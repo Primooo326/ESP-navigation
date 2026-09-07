@@ -64,7 +64,7 @@ void GC9A01Display::update()
 
   uint32_t now = millis();
 
-  // 1. Delegar lectura táctil a ITouchController (SRP / DIP)
+  // 1. Procesar Gestos Táctiles con CST816STouchController
   if (_touchController)
   {
     uint8_t gesture = 0;
@@ -72,19 +72,78 @@ void GC9A01Display::update()
     if (_touchController->update(gesture, x, y))
     {
       _lastTouchMillis = now;
-      _activeView = (_activeView == 0) ? 1 : 0;
-      Serial.printf(">> [Display] Touch detectado. Vista cambiada a: %d\n", _activeView);
+      Serial.printf(">> [Display] Gesto Táctil: 0x%02X en (%d, %d)\n", gesture, x, y);
+
+      if (_showQuickSettings)
+      {
+        if (gesture == GESTURE_SWIPE_UP || (gesture == GESTURE_SINGLE_TAP && y < 60))
+        {
+          _showQuickSettings = false;
+        }
+        else if (gesture == GESTURE_SINGLE_TAP)
+        {
+          if (x < 110 && y >= 80 && y <= 160)
+          {
+            _brightnessLevel = (_brightnessLevel > 50) ? _brightnessLevel - 50 : 30;
+            analogWrite(_pinBl, _brightnessLevel);
+          }
+          else if (x > 130 && y >= 80 && y <= 160)
+          {
+            _brightnessLevel = (_brightnessLevel < 205) ? _brightnessLevel + 50 : 255;
+            analogWrite(_pinBl, _brightnessLevel);
+          }
+          else if (y > 160)
+          {
+            _rotation = (_rotation == 0) ? 2 : 0;
+            _gfx->setRotation(_rotation);
+          }
+        }
+        renderCurrentView();
+        return;
+      }
+
+      switch (gesture)
+      {
+      case GESTURE_SWIPE_LEFT:
+        _activeView = (_activeView + 1) % 4;
+        break;
+      case GESTURE_SWIPE_RIGHT:
+        _activeView = (_activeView + 3) % 4;
+        break;
+      case GESTURE_SWIPE_DOWN:
+        _showQuickSettings = true;
+        break;
+      case GESTURE_SWIPE_UP:
+        _themeIndex = (_themeIndex + 1) % 3;
+        break;
+      case GESTURE_SINGLE_TAP:
+        if (_activeView == 0 && _hasActiveNavigation)
+        {
+          _peekNextManeuver = !_peekNextManeuver;
+        }
+        else
+        {
+          _activeView = (_activeView + 1) % 4;
+        }
+        break;
+      case GESTURE_LONG_PRESS:
+        _peekNextManeuver = false;
+        _showQuickSettings = false;
+        _activeView = 0;
+        break;
+      }
+
       renderCurrentView();
     }
   }
 
-  // 2. Temporizador Auto-Retorno (8 segundos) si hay navegación activa y estamos en Vista 1 (Reloj)
-  if (_hasActiveNavigation && _activeView == 1)
+  // 2. Temporizador Auto-Retorno (10 segundos) si hay navegación activa y el usuario está en otra vista
+  if (_hasActiveNavigation && _activeView != 0 && !_showQuickSettings)
   {
-    if (now - _lastTouchMillis > 8000)
+    if (now - _lastTouchMillis > 10000)
     {
       _activeView = 0;
-      Serial.println(">> [Display] Timeout 8s expiro. Volviendo a Vista 0 (Navegacion HUD).");
+      _peekNextManeuver = false;
       renderCurrentView();
     }
   }
@@ -92,18 +151,24 @@ void GC9A01Display::update()
 
 void GC9A01Display::renderCurrentView()
 {
+  if (!_gfx)
+    return;
+
   if (_lastBleStatus.state != BLEState::CONNECTED)
   {
     renderDisconnectedUI(_lastBleStatus);
     return;
   }
 
-  if (_activeView == 1)
+  if (_showQuickSettings)
   {
-    renderDashboardIdleUI(_lastNavData);
+    renderQuickSettingsOverlay();
+    return;
   }
-  else
+
+  switch (_activeView)
   {
+  case 0:
     if (_hasActiveNavigation)
     {
       renderNavigationHUDUI(_lastNavData);
@@ -112,6 +177,17 @@ void GC9A01Display::renderCurrentView()
     {
       renderDashboardIdleUI(_lastNavData);
     }
+    break;
+  case 1:
+    renderCompassRoseUI(_lastNavData);
+    break;
+  case 2:
+    renderTripStatsUI(_lastNavData);
+    break;
+  case 3:
+  default:
+    renderDashboardIdleUI(_lastNavData);
+    break;
   }
 }
 
@@ -412,4 +488,107 @@ void GC9A01Display::drawTurnArrow(uint8_t turnIcon, int cx, int cy, uint16_t col
     _gfx->fillRect(cx - 7, cy - 6, 14, 32, color);
     break;
   }
+}
+
+// ----------------------------------------------------------------------------
+// INTERFAZ 4: BRÚJULA DIGITAL COMPACTA (Rose Vectorial)
+// ----------------------------------------------------------------------------
+void GC9A01Display::renderCompassRoseUI(const NavigationPacket &nav)
+{
+  uint16_t mainColor = (_themeIndex == 0) ? RGB565_GREEN : ((_themeIndex == 1) ? RGB565_WHITE : RGB565_CYAN);
+
+  _gfx->fillCircle(120, 120, 119, RGB565_BLACK);
+  _gfx->drawCircle(120, 120, 118, RGB565_DARKGREY);
+  _gfx->drawCircle(120, 120, 95, RGB565_DARKGREY);
+
+  drawCenteredText("[ BRUJULA DIGITAL ]", 25, 1, mainColor);
+
+  drawCenteredText("N", 38, 1, mainColor);
+  drawCenteredText("S", 192, 1, RGB565_LIGHTGREY);
+
+  float headingAngle = 360.0f - nav.headingDeg;
+  float rad = (headingAngle - 90.0f) * (M_PI / 180.0f);
+
+  int needleX = 120 + (int)(cos(rad) * 65.0f);
+  int needleY = 120 + (int)(sin(rad) * 65.0f);
+
+  _gfx->drawLine(120, 120, needleX, needleY, mainColor);
+  _gfx->fillCircle(needleX, needleY, 5, mainColor);
+  _gfx->fillCircle(120, 120, 4, RGB565_WHITE);
+
+  char degBuf[20];
+  snprintf(degBuf, sizeof(degBuf), "%3d deg", nav.headingDeg % 360);
+  drawCenteredText(degBuf, 110, 2, RGB565_WHITE);
+
+  char distBuf[24];
+  snprintf(distBuf, sizeof(distBuf), "Restan: %.1f km", nav.totalRemainingMeters / 1000.0f);
+  drawCenteredText(distBuf, 155, 1, RGB565_LIGHTGREY);
+  drawCenteredText("1/4  Desliza Lateral", 188, 1, RGB565_DARKGREY);
+}
+
+// ----------------------------------------------------------------------------
+// INTERFAZ 5: ESTADÍSTICAS DEL VIAJE & METRICAS
+// ----------------------------------------------------------------------------
+void GC9A01Display::renderTripStatsUI(const NavigationPacket &nav)
+{
+  uint16_t mainColor = (_themeIndex == 0) ? RGB565_GREEN : ((_themeIndex == 1) ? RGB565_WHITE : RGB565_CYAN);
+
+  _gfx->fillCircle(120, 120, 119, RGB565_BLACK);
+  _gfx->drawCircle(120, 120, 118, RGB565_DARKGREY);
+
+  drawCenteredText("[ PANEL DE VIAJE ]", 25, 1, mainColor);
+
+  char speedBuf[20];
+  snprintf(speedBuf, sizeof(speedBuf), "%d", nav.speedKmh);
+  drawCenteredText(speedBuf, 60, 4, RGB565_WHITE);
+  drawCenteredText("KM / H", 100, 1, RGB565_YELLOW);
+
+  char totalBuf[24];
+  if (nav.totalRemainingMeters >= 1000)
+    snprintf(totalBuf, sizeof(totalBuf), "Restante: %.1f km", nav.totalRemainingMeters / 1000.0f);
+  else
+    snprintf(totalBuf, sizeof(totalBuf), "Restante: %d m", nav.totalRemainingMeters);
+
+  drawCenteredText(totalBuf, 128, 2, RGB565_WHITE);
+
+  char headingBuf[20];
+  snprintf(headingBuf, sizeof(headingBuf), "Rumbo: %d deg", nav.headingDeg);
+  drawCenteredText(headingBuf, 160, 1, RGB565_LIGHTGREY);
+
+  drawCenteredText("2/4  Desliza Lateral", 188, 1, RGB565_DARKGREY);
+}
+
+// ----------------------------------------------------------------------------
+// INTERFAZ 6: MENÚ DE CONTROL RÁPIDO / CORTINILLA (Swipe Down Overlay)
+// ----------------------------------------------------------------------------
+void GC9A01Display::renderQuickSettingsOverlay()
+{
+  _gfx->fillCircle(120, 120, 119, RGB565_BLACK);
+  _gfx->drawCircle(120, 120, 118, RGB565_YELLOW);
+  _gfx->drawCircle(120, 120, 117, RGB565_YELLOW);
+
+  drawCenteredText("[ CORTINILLA CONTROL ]", 25, 1, RGB565_YELLOW);
+  _gfx->drawFastHLine(30, 42, 180, RGB565_DARKGREY);
+
+  drawCenteredText("BRILLO PANTALLA", 52, 1, RGB565_WHITE);
+
+  // Botones de Brillo - / +
+  _gfx->fillRoundRect(35, 75, 45, 45, 8, RGB565_DARKGREY);
+  drawCenteredText("-", 88, 3, RGB565_WHITE);
+
+  uint8_t pct = (uint8_t)((_brightnessLevel / 255.0f) * 100.0f);
+  char pctBuf[8];
+  snprintf(pctBuf, sizeof(pctBuf), "%d%%", pct);
+  drawCenteredText(pctBuf, 90, 2, RGB565_GREEN);
+
+  _gfx->fillRoundRect(160, 75, 45, 45, 8, RGB565_DARKGREY);
+  drawCenteredText("+", 88, 3, RGB565_WHITE);
+
+  // Botón Rotación Pantalla
+  _gfx->fillRoundRect(45, 140, 150, 36, 10, RGB565_NAVY);
+  char rotBuf[24];
+  snprintf(rotBuf, sizeof(rotBuf), "ROTAR: %d DEG", _rotation * 90);
+  drawCenteredText(rotBuf, 150, 1, RGB565_WHITE);
+
+  drawCenteredText("Arriba: Cerrar", 192, 1, RGB565_LIGHTGREY);
 }

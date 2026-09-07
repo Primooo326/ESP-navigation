@@ -11,6 +11,11 @@ private:
   uint8_t _pinScl;
   uint8_t _address;
   bool _wasTouchedPrev;
+  uint32_t _touchStartMs;
+  uint16_t _startX;
+  uint16_t _startY;
+  uint16_t _lastX;
+  uint16_t _lastY;
 
 public:
   CST816STouchController(uint8_t sda = 4, uint8_t scl = 5, uint8_t address = 0x15);

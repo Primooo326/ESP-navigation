@@ -20,9 +20,14 @@ private:
   Arduino_GFX *_gfx;
   ITouchController *_touchController;
 
-  // Touch & View States
-  uint8_t _activeView; // 0 = Nav HUD / Primary, 1 = Clock & Weather Dashboard
+  // Touch & Multi-View States
+  uint8_t _activeView; // 0 = Nav HUD, 1 = Compass Rose, 2 = Trip Stats, 3 = Clock/Weather
   uint32_t _lastTouchMillis;
+  uint8_t _brightnessLevel; // 0-255 PWM
+  uint8_t _rotation;        // 0 or 2 (0 deg vs 180 deg)
+  uint8_t _themeIndex;      // 0 = Neon, 1 = Minimal, 2 = Cyberpunk
+  bool _showQuickSettings;  // Swipe Down overlay active
+  bool _peekNextManeuver;   // Tap Central preview mode
 
   // Estado del renderizado diferencial anti-parpadeo
   bool _sensorUiInitialized;
@@ -42,6 +47,9 @@ private:
   void renderDisconnectedUI(const BLEStatus &status);
   void renderDashboardIdleUI(const NavigationPacket &navData);
   void renderNavigationHUDUI(const NavigationPacket &navData);
+  void renderCompassRoseUI(const NavigationPacket &navData);
+  void renderTripStatsUI(const NavigationPacket &navData);
+  void renderQuickSettingsOverlay();
   void drawTurnArrow(uint8_t turnIcon, int cx, int cy, uint16_t color);
 
   void renderCurrentView();

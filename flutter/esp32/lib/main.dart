@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:http/http.dart' as http;
+import 'package:flutter_tts/flutter_tts.dart';
 
 import 'models/navigation_packet.dart';
 import 'services/osrm_service.dart';
@@ -63,12 +66,15 @@ class _MainHudScreenState extends State<MainHudScreen> {
   final LocationService _locationService = LocationService();
   final OSRMService _osrmService = OSRMService();
   final NavigationEngine _navEngine = NavigationEngine();
+  final FlutterTts _flutterTts = FlutterTts();
 
-  // Mapa y Posición
+  // Mapa, Posición y Búsqueda
   final MapController _mapController = MapController();
+  final TextEditingController _searchController = TextEditingController();
   LatLng _userPosition = const LatLng(4.60971, -74.08175); // Bogotá por defecto
   LatLng? _destinationPosition;
   String _destinationName = 'Destino seleccionado';
+  bool _isSearching = false;
 
   final ValueNotifier<double> _compassHeadingNotifier = ValueNotifier<double>(0.0);
   final ValueNotifier<NavigationPacket?> _lastPacketNotifier = ValueNotifier<NavigationPacket?>(null);
@@ -122,14 +128,26 @@ class _MainHudScreenState extends State<MainHudScreen> {
   @override
   void initState() {
     super.initState();
+    _initTts();
     _initAppServices();
     _setupNavEngineCallbacks();
+  }
+
+  void _initTts() {
+    _flutterTts.setLanguage('es-ES');
+    _flutterTts.setSpeechRate(0.48);
+    _flutterTts.setVolume(1.0);
+    _flutterTts.setPitch(1.0);
   }
 
   void _setupNavEngineCallbacks() {
     _navEngine.onPacketGenerated = (NavigationPacket packet) {
       _lastPacketNotifier.value = packet;
       _sendBlePacket(packet);
+    };
+
+    _navEngine.onVoicePromptRequested = (String promptText) async {
+      await _flutterTts.speak(promptText);
     };
 
     _navEngine.onReRouteRequested = (LatLng currentPos) async {
@@ -143,6 +161,57 @@ class _MainHudScreenState extends State<MainHudScreen> {
         }
       }
     };
+  }
+
+  Future<void> _searchAddress(String query) async {
+    if (query.trim().isEmpty) return;
+    setState(() => _isSearching = true);
+    FocusScope.of(context).unfocus();
+
+    try {
+      final url = Uri.parse('https://nominatim.openstreetmap.org/search?q=${Uri.encodeComponent(query)}&format=json&limit=1');
+      final response = await http.get(url, headers: {'User-Agent': 'com.example.esp32'}).timeout(const Duration(seconds: 8));
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body) as List<dynamic>;
+        if (data.isNotEmpty) {
+          final lat = double.parse(data[0]['lat']);
+          final lon = double.parse(data[0]['lon']);
+          final displayName = data[0]['display_name'] as String;
+          final pos = LatLng(lat, lon);
+          _mapController.move(pos, 15.0);
+          _fetchRouteToDestination(pos, customName: displayName.split(',')[0]);
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('No se encontraron resultados para la búsqueda')),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error en geocoding: $e');
+    } finally {
+      if (mounted) setState(() => _isSearching = false);
+    }
+  }
+
+  void _toggleSimulation() {
+    if (_navEngine.isSimulating) {
+      _navEngine.stopSimulation();
+      _lastPacketNotifier.value = null;
+      setState(() {});
+    } else {
+      if (_currentRoute == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Selecciona primero un destino en el mapa')),
+        );
+        return;
+      }
+      _navEngine.startSimulation(_currentRoute!);
+      _flutterTts.speak('Iniciando simulación de recorrido a 45 kilómetros por hora');
+      setState(() {});
+    }
   }
 
   Future<void> _initAppServices() async {
@@ -441,37 +510,70 @@ class _MainHudScreenState extends State<MainHudScreen> {
             ],
           ),
 
-          // 2. PANEL TOP BAR - BARRA DE CONEXIÓN BLE Y MULTILOCALIZACIÓN
+          // 2. PANEL TOP BAR - BARRA DE BÚSQUEDA GEONAMICS, BLE Y MULTILOCALIZACIÓN
           Positioned(
             top: 16,
             left: 16,
             right: 16,
             child: Card(
               color: const Color(0xFF18181B).withValues(alpha: 0.94),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: Padding(
                 padding: const EdgeInsets.all(12.0),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    ValueListenableBuilder<String>(
-                      valueListenable: _bleService.statusTextNotifier,
-                      builder: (context, statusText, _) {
-                        return Text(
-                          'BLE: $statusText',
-                          style: TextStyle(
-                            color: _bleService.isConnectedNotifier.value ? const Color(0xFF00E676) : const Color(0xFFFFB74D),
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
-                        );
-                      },
+                    // BARRA DE BÚSQUEDA DE DIRECCIONES NOMINATIM GEONAMICS
+                    TextField(
+                      controller: _searchController,
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                      textInputAction: TextInputAction.search,
+                      onSubmitted: _searchAddress,
+                      decoration: InputDecoration(
+                        hintText: 'Buscar dirección o lugar...',
+                        hintStyle: const TextStyle(color: Colors.white38, fontSize: 13),
+                        prefixIcon: const Icon(Icons.search, color: Color(0xFF00E676), size: 20),
+                        suffixIcon: _isSearching
+                            ? const Padding(
+                                padding: EdgeInsets.all(12.0),
+                                child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00E676))),
+                              )
+                            : IconButton(
+                                icon: const Icon(Icons.send, color: Color(0xFF00E676), size: 18),
+                                onPressed: () => _searchAddress(_searchController.text),
+                              ),
+                        filled: true,
+                        fillColor: const Color(0xFF27272A),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                      ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _destinationPosition != null ? 'Destino: $_destinationName' : 'Toca el mapa o usa el selector para fijar destino',
-                      style: const TextStyle(color: Colors.white70, fontSize: 12),
-                      overflow: TextOverflow.ellipsis,
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        ValueListenableBuilder<String>(
+                          valueListenable: _bleService.statusTextNotifier,
+                          builder: (context, statusText, _) {
+                            return Text(
+                              'BLE: $statusText',
+                              style: TextStyle(
+                                color: _bleService.isConnectedNotifier.value ? const Color(0xFF00E676) : const Color(0xFFFFB74D),
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                            );
+                          },
+                        ),
+                        Expanded(
+                          child: Text(
+                            _destinationPosition != null ? 'Destino: $_destinationName' : 'Toca el mapa o busca un lugar',
+                            textAlign: TextAlign.end,
+                            style: const TextStyle(color: Colors.white70, fontSize: 11),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 8),
                     Row(
@@ -479,11 +581,12 @@ class _MainHudScreenState extends State<MainHudScreen> {
                         Expanded(
                           child: ElevatedButton.icon(
                             onPressed: _showLocationPickerModal,
-                            icon: const Icon(Icons.place, size: 18),
-                            label: const Text('Destinos Rápido'),
+                            icon: const Icon(Icons.place, size: 16),
+                            label: const Text('Preset Destinos', style: TextStyle(fontSize: 12)),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFF27272A),
                               foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 8),
                             ),
                           ),
                         ),
@@ -493,11 +596,12 @@ class _MainHudScreenState extends State<MainHudScreen> {
                           builder: (context, isConnected, _) {
                             return ElevatedButton.icon(
                               onPressed: () => _bleService.toggleConnection(),
-                              icon: const Icon(Icons.bluetooth, size: 18),
-                              label: Text(isConnected ? 'Conectado' : 'BLE ESP32'),
+                              icon: const Icon(Icons.bluetooth, size: 16),
+                              label: Text(isConnected ? 'Conectado' : 'BLE ESP32', style: const TextStyle(fontSize: 12)),
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: isConnected ? const Color(0xFF00E676) : const Color(0xFFFFB74D),
                                 foregroundColor: Colors.black,
+                                padding: const EdgeInsets.symmetric(vertical: 8),
                               ),
                             );
                           },
@@ -512,8 +616,8 @@ class _MainHudScreenState extends State<MainHudScreen> {
 
           // 3. PANEL SLIDING SHEET - CONTROL Y LISTADO DE INDICACIONES TBT
           DraggableScrollableSheet(
-            initialChildSize: _currentRoute != null ? 0.32 : 0.18,
-            minChildSize: 0.16,
+            initialChildSize: _currentRoute != null ? 0.35 : 0.20,
+            minChildSize: 0.18,
             maxChildSize: 0.85,
             builder: (context, scrollController) {
               return Container(
@@ -596,29 +700,63 @@ class _MainHudScreenState extends State<MainHudScreen> {
                       },
                     ),
 
-                    SizedBox(
-                      width: double.infinity,
-                      height: 52,
-                      child: ElevatedButton.icon(
-                        onPressed: _isLoadingRoute ? null : _toggleNavigation,
-                        icon: Icon(
-                          _navEngine.isNavigating ? Icons.stop : Icons.navigation,
-                          color: Colors.black,
-                        ),
-                        label: Text(
-                          _navEngine.isNavigating ? 'DETENER NAVEGACIÓN HUD' : 'INICIAR NAVEGACIÓN SMART HUD',
-                          style: const TextStyle(
-                            color: Colors.black,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 3,
+                          child: SizedBox(
+                            height: 50,
+                            child: ElevatedButton.icon(
+                              onPressed: _isLoadingRoute ? null : _toggleNavigation,
+                              icon: Icon(
+                                _navEngine.isNavigating ? Icons.stop : Icons.navigation,
+                                color: Colors.black,
+                                size: 20,
+                              ),
+                              label: Text(
+                                _navEngine.isNavigating ? 'DETENER HUD' : 'INICIAR HUD',
+                                style: const TextStyle(
+                                  color: Colors.black,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor:
+                                    _navEngine.isNavigating ? const Color(0xFFFF5252) : const Color(0xFF00E676),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
                           ),
                         ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor:
-                              _navEngine.isNavigating ? const Color(0xFFFF5252) : const Color(0xFF00E676),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          flex: 2,
+                          child: SizedBox(
+                            height: 50,
+                            child: ElevatedButton.icon(
+                              onPressed: _isLoadingRoute ? null : _toggleSimulation,
+                              icon: Icon(
+                                _navEngine.isSimulating ? Icons.pause : Icons.play_arrow,
+                                color: Colors.white,
+                                size: 18,
+                              ),
+                              label: Text(
+                                _navEngine.isSimulating ? 'PARAR DEMO' : 'DEMO 45 KM/H',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 11,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF00B0FF),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
+                      ],
                     ),
 
                     // LISTA DESLIZABLE DE INDICACIONES PASO A PASO DE LA RUTA
