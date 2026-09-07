@@ -509,102 +509,292 @@ class _MainHudScreenState extends State<MainHudScreen> {
             ),
           ),
 
-          // 3. PANEL BOTTOM SHEET - CONTROL DE NAVEGACIÓN
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: const BoxDecoration(
-                color: Color(0xFF18181B),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-                boxShadow: [BoxShadow(color: Colors.black54, blurRadius: 10)],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ValueListenableBuilder<NavigationPacket?>(
-                    valueListenable: _lastPacketNotifier,
-                    builder: (context, lastPacket, _) {
-                      if (!_navEngine.isNavigating || lastPacket == null) {
-                        return const SizedBox.shrink();
-                      }
-                      return Column(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF27272A),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: const Color(0xFF00E676), width: 1.5),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.navigation, size: 32, color: Color(0xFF00E676)),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        '${lastPacket.distanceMeters} m - ${lastPacket.streetName}',
-                                        style: const TextStyle(
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.bold,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                      ValueListenableBuilder<int>(
-                                        valueListenable: _bleService.packetsSentNotifier,
-                                        builder: (context, count, _) {
-                                          return Text(
-                                            'Velocidad: ${lastPacket.speedKmh} km/h | Paquetes BLE: $count',
-                                            style: const TextStyle(fontSize: 12, color: Colors.white70),
-                                          );
-                                        },
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                        ],
-                      );
-                    },
-                  ),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 52,
-                    child: ElevatedButton.icon(
-                      onPressed: _isLoadingRoute ? null : _toggleNavigation,
-                      icon: Icon(
-                        _navEngine.isNavigating ? Icons.stop : Icons.navigation,
-                        color: Colors.black,
-                      ),
-                      label: Text(
-                        _navEngine.isNavigating ? 'DETENER NAVEGACIÓN HUD' : 'INICIAR NAVEGACIÓN SMART HUD',
-                        style: const TextStyle(
-                          color: Colors.black,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
+          // 3. PANEL SLIDING SHEET - CONTROL Y LISTADO DE INDICACIONES TBT
+          DraggableScrollableSheet(
+            initialChildSize: _currentRoute != null ? 0.32 : 0.18,
+            minChildSize: 0.16,
+            maxChildSize: 0.85,
+            builder: (context, scrollController) {
+              return Container(
+                decoration: const BoxDecoration(
+                  color: Color(0xFF18181B),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                  boxShadow: [BoxShadow(color: Colors.black87, blurRadius: 16)],
+                ),
+                child: ListView(
+                  controller: scrollController,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  children: [
+                    // Pull Handle Indicator / Botoncito Deslizable
+                    Center(
+                      child: Container(
+                        margin: const EdgeInsets.only(top: 4, bottom: 12),
+                        width: 44,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF00E676).withValues(alpha: 0.8),
+                          borderRadius: BorderRadius.circular(10),
                         ),
                       ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor:
-                            _navEngine.isNavigating ? const Color(0xFFFF5252) : const Color(0xFF00E676),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+
+                    ValueListenableBuilder<NavigationPacket?>(
+                      valueListenable: _lastPacketNotifier,
+                      builder: (context, lastPacket, _) {
+                        if (!_navEngine.isNavigating || lastPacket == null) {
+                          return const SizedBox.shrink();
+                        }
+                        return Column(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF27272A),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: const Color(0xFF00E676), width: 1.5),
+                              ),
+                              child: Row(
+                                children: [
+                                  CircleAvatar(
+                                    radius: 22,
+                                    backgroundColor: const Color(0xFF00E676),
+                                    child: Icon(_getTurnIconData(lastPacket.turnIcon), size: 26, color: Colors.black),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          '${lastPacket.distanceMeters} m - ${lastPacket.streetName}',
+                                          style: const TextStyle(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        ValueListenableBuilder<int>(
+                                          valueListenable: _bleService.packetsSentNotifier,
+                                          builder: (context, count, _) {
+                                            return Text(
+                                              'Velocidad: ${lastPacket.speedKmh} km/h | Restante: ${(lastPacket.totalRemainingMeters / 1000).toStringAsFixed(1)} km',
+                                              style: const TextStyle(fontSize: 12, color: Colors.white70),
+                                            );
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                        );
+                      },
+                    ),
+
+                    SizedBox(
+                      width: double.infinity,
+                      height: 52,
+                      child: ElevatedButton.icon(
+                        onPressed: _isLoadingRoute ? null : _toggleNavigation,
+                        icon: Icon(
+                          _navEngine.isNavigating ? Icons.stop : Icons.navigation,
+                          color: Colors.black,
+                        ),
+                        label: Text(
+                          _navEngine.isNavigating ? 'DETENER NAVEGACIÓN HUD' : 'INICIAR NAVEGACIÓN SMART HUD',
+                          style: const TextStyle(
+                            color: Colors.black,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              _navEngine.isNavigating ? const Color(0xFFFF5252) : const Color(0xFF00E676),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
                       ),
                     ),
-                  ),
-                ],
-              ),
-            ),
+
+                    // LISTA DESLIZABLE DE INDICACIONES PASO A PASO DE LA RUTA
+                    if (_currentRoute != null && _currentRoute!.steps.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Indicaciones (Desliza para desplegar)',
+                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white70),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF27272A),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '${_currentRoute!.steps.length} pasadas',
+                              style: const TextStyle(fontSize: 11, color: Color(0xFF00E676), fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      ValueListenableBuilder<int>(
+                        valueListenable: _navEngine.currentStepNotifier,
+                        builder: (context, activeStepIdx, _) {
+                          return ListView.builder(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: _currentRoute!.steps.length,
+                            itemBuilder: (context, index) {
+                              final step = _currentRoute!.steps[index];
+                              final isCurrent = _navEngine.isNavigating && index == activeStepIdx;
+                              final isCompleted = _navEngine.isNavigating && index < activeStepIdx;
+
+                              return Container(
+                                margin: const EdgeInsets.symmetric(vertical: 4),
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: isCurrent
+                                      ? const Color(0xFF00E676).withValues(alpha: 0.18)
+                                      : (isCompleted ? Colors.white.withValues(alpha: 0.02) : const Color(0xFF27272A).withValues(alpha: 0.6)),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: isCurrent
+                                      ? Border.all(color: const Color(0xFF00E676), width: 1.5)
+                                      : null,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 36,
+                                      height: 36,
+                                      decoration: BoxDecoration(
+                                        color: isCurrent
+                                            ? const Color(0xFF00E676)
+                                            : (isCompleted ? Colors.white24 : const Color(0xFF3F3F46)),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: Icon(
+                                        _getTurnIconData(step.turnIcon),
+                                        color: isCurrent ? Colors.black : Colors.white,
+                                        size: 20,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  _getTurnInstructionText(step.turnIcon, step.streetName),
+                                                  style: TextStyle(
+                                                    fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+                                                    color: isCurrent ? const Color(0xFF00E676) : (isCompleted ? Colors.white38 : Colors.white),
+                                                    fontSize: 13,
+                                                  ),
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              if (isCurrent) ...[
+                                                const SizedBox(width: 6),
+                                                Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                  decoration: BoxDecoration(
+                                                    color: const Color(0xFF00E676),
+                                                    borderRadius: BorderRadius.circular(4),
+                                                  ),
+                                                  child: const Text(
+                                                    'AHORA',
+                                                    style: TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold),
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                          const SizedBox(height: 3),
+                                          Text(
+                                            'Tramo: ${step.distanceMeters >= 1000 ? '${(step.distanceMeters / 1000).toStringAsFixed(1)} km' : '${step.distanceMeters.round()} m'}',
+                                            style: TextStyle(
+                                              color: isCompleted ? Colors.white24 : Colors.white60,
+                                              fontSize: 11,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          );
+                        },
+                      ),
+                    ],
+                  ],
+                ),
+              );
+            },
           ),
         ],
       ),
     );
+  }
+
+  IconData _getTurnIconData(TurnIcon icon) {
+    switch (icon) {
+      case TurnIcon.straight:
+        return Icons.arrow_upward;
+      case TurnIcon.turnRight:
+        return Icons.turn_right;
+      case TurnIcon.turnLeft:
+        return Icons.turn_left;
+      case TurnIcon.slightRight:
+        return Icons.shortcut;
+      case TurnIcon.slightLeft:
+        return Icons.turn_slight_left;
+      case TurnIcon.sharpRight:
+        return Icons.u_turn_right;
+      case TurnIcon.sharpLeft:
+        return Icons.u_turn_left;
+      case TurnIcon.roundabout:
+        return Icons.rotate_right;
+      case TurnIcon.arrived:
+        return Icons.flag;
+      default:
+        return Icons.navigation;
+    }
+  }
+
+  String _getTurnInstructionText(TurnIcon icon, String streetName) {
+    switch (icon) {
+      case TurnIcon.straight:
+        return 'Continúa recto por $streetName';
+      case TurnIcon.turnRight:
+        return 'Gira a la derecha en $streetName';
+      case TurnIcon.turnLeft:
+        return 'Gira a la izquierda en $streetName';
+      case TurnIcon.slightRight:
+        return 'Gira levemente a la derecha en $streetName';
+      case TurnIcon.slightLeft:
+        return 'Gira levemente a la izquierda en $streetName';
+      case TurnIcon.sharpRight:
+        return 'Gira pronunciado a la derecha en $streetName';
+      case TurnIcon.sharpLeft:
+        return 'Gira pronunciado a la izquierda en $streetName';
+      case TurnIcon.roundabout:
+        return 'Entra a la rotonda hacia $streetName';
+      case TurnIcon.arrived:
+        return 'Llegada al destino en $streetName';
+      default:
+        return 'Avanza hacia $streetName';
+    }
   }
 }

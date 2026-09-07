@@ -25,6 +25,8 @@ class NavigationEngine {
 
   DateTime? _lastReRouteTime;
 
+  final ValueNotifier<int> currentStepNotifier = ValueNotifier<int>(0);
+
   bool get isNavigating => _isNavigating;
   OSRMRoute? get activeRoute => _activeRoute;
   int get currentStepIndex => _currentStepIndex;
@@ -33,6 +35,7 @@ class NavigationEngine {
   void startNavigation(OSRMRoute route) {
     _activeRoute = route;
     _currentStepIndex = 0;
+    currentStepNotifier.value = 0;
     _isNavigating = true;
     if (_positionSubscription == null) {
       _initGpsStream();
@@ -43,6 +46,7 @@ class NavigationEngine {
     _isNavigating = false;
     _activeRoute = null;
     _currentStepIndex = 0;
+    currentStepNotifier.value = 0;
     _positionSubscription?.cancel();
     _positionSubscription = null;
   }
@@ -102,9 +106,10 @@ class NavigationEngine {
       targetStep.location,
     );
 
-    // 2. Transición automática al siguiente paso al acercarse a <20 metros del cruce
-    if (distToStep < 20.0 && _currentStepIndex < _activeRoute!.steps.length - 1) {
+    // 2. Transición automática al siguiente paso al acercarse a <25 metros del cruce
+    if (distToStep < 25.0 && _currentStepIndex < _activeRoute!.steps.length - 1) {
       _currentStepIndex++;
+      currentStepNotifier.value = _currentStepIndex;
       upcomingIndex = (_currentStepIndex + 1 < _activeRoute!.steps.length)
           ? _currentStepIndex + 1
           : _currentStepIndex;
