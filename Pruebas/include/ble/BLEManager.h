@@ -24,6 +24,9 @@ private:
   SensorData _latestSensorData;
   volatile bool _hasNewSensorData;
 
+  NavigationPacket _latestNavData;
+  volatile bool _hasNewNavData;
+
   void setStatus(BLEState state, const String &detail = "", int rssi = 0);
 
   friend class ManagerServerCallbacks;

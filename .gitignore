@@ -6,7 +6,7 @@
 *.bin
 *.hex
 
-# Flutter / Dart
+# Flutter / Dart / Android
 **/build/
 **/.dart_tool/
 **/.flutter-plugins
@@ -16,6 +16,8 @@
 **/coverage/
 **/doc/api/
 **/.widget_preview/
+**/.gradle/
+**/.kotlin/
 **/android/app/debug
 **/android/app/profile
 **/android/app/release

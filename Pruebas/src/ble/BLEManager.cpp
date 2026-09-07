@@ -37,7 +37,23 @@ public:
   void onWrite(BLECharacteristic *pCharacteristic) override
   {
     std::string rxValue = pCharacteristic->getValue();
-    if (rxValue.length() > 0)
+    size_t len = rxValue.length();
+
+    if (len == sizeof(NavigationPacket) || (len > 0 && (uint8_t)rxValue[0] == 1 && len >= 10))
+    {
+      NavigationPacket nav;
+      size_t copyLen = (len < sizeof(NavigationPacket)) ? len : sizeof(NavigationPacket);
+      memcpy(&nav, rxValue.data(), copyLen);
+
+      _manager._latestNavData = nav;
+      _manager._hasNewNavData = true;
+
+      Serial.printf(">> [BLE RX NAV] Icon: %d | Dist: %d m | Speed: %d km/h | Street: %s\n",
+                    nav.turnIcon, nav.distanceMeters, nav.speedKmh, nav.streetName);
+      return;
+    }
+
+    if (len > 0)
     {
       String payload = String(rxValue.c_str());
 
@@ -48,7 +64,6 @@ public:
       int valCount = 0;
       String curToken = "";
 
-      // Extractor universal de números (soporta CSV, JSON, espacios)
       for (size_t i = 0; i <= payload.length(); i++)
       {
         char c = (i < payload.length()) ? payload.charAt(i) : ' ';
@@ -84,14 +99,8 @@ public:
       if (valCount >= 7)
         data.heading = vals[6];
 
-      // Almacenar en buffer y marcar bandera para el bucle principal de la aplicación
       _manager._latestSensorData = data;
       _manager._hasNewSensorData = true;
-
-      Serial.printf(">> [BLE RX] Acc(%.1f, %.1f, %.1f) Gyro(%.1f, %.1f, %.1f) Brujula: %.1f deg\n",
-                    data.accX, data.accY, data.accZ,
-                    data.gyroX, data.gyroY, data.gyroZ,
-                    data.heading);
     }
   }
 };
@@ -99,7 +108,8 @@ public:
 BLEManager::BLEManager(const String &deviceName, IBLEStatusListener *listener)
     : _deviceName(deviceName), _listener(listener),
       _pServer(nullptr), _pService(nullptr), _pCharacteristic(nullptr),
-      _deviceConnected(false), _oldDeviceConnected(false), _hasNewSensorData(false)
+      _deviceConnected(false), _oldDeviceConnected(false),
+      _hasNewSensorData(false), _hasNewNavData(false)
 {
 }
 
@@ -181,6 +191,16 @@ void BLEManager::update()
     if (_listener)
     {
       _listener->onSensorDataReceived(_latestSensorData);
+    }
+  }
+
+  // Despachar datos de navegación recibidos desde Android
+  if (_hasNewNavData && _deviceConnected)
+  {
+    _hasNewNavData = false;
+    if (_listener)
+    {
+      _listener->onNavigationDataReceived(_latestNavData);
     }
   }
 }

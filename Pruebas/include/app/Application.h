@@ -21,6 +21,7 @@ public:
   // Implementación del observer IBLEStatusListener
   void onBLEStatusChanged(const BLEStatus &status) override;
   void onSensorDataReceived(const SensorData &data) override;
+  void onNavigationDataReceived(const NavigationPacket &navData) override;
 };
 
 #endif // APPLICATION_H
