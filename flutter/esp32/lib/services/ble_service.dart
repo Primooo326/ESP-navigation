@@ -20,6 +20,26 @@ class BleService {
   BluetoothDevice? get connectedDevice => _connectedDevice;
   BluetoothCharacteristic? get bleCharacteristic => _bleCharacteristic;
 
+  Future<void> checkAndAutoConnect() async {
+    try {
+      // 1. Verificar si el ESP32 ya está emparejado/conectado a nivel del sistema Android
+      List<BluetoothDevice> connected = FlutterBluePlus.connectedDevices;
+      for (BluetoothDevice dev in connected) {
+        if (dev.platformName == targetDeviceName || dev.remoteId.str.contains('ESP32')) {
+          _connectedDevice = dev;
+          await _setupConnectedDevice(dev);
+          return;
+        }
+      }
+      // 2. Si no está conectado, iniciar escaneo y auto-conexión en segundo plano
+      if (!isConnectedNotifier.value && !isConnectingNotifier.value) {
+        connect();
+      }
+    } catch (e) {
+      debugPrint('Auto-connect BLE error: $e');
+    }
+  }
+
   Future<void> toggleConnection() async {
     if (_connectedDevice != null || isConnectingNotifier.value) {
       await disconnect();
@@ -64,40 +84,44 @@ class BleService {
 
       statusTextNotifier.value = 'Conectando a ESP32...';
       await dev.connect(timeout: const Duration(seconds: 10));
-      _connectedDevice = dev;
-
-      _connectionStateSubscription = dev.connectionState.listen((state) {
-        if (state == BluetoothConnectionState.disconnected) {
-          _handleDisconnected();
-        }
-      });
-
-      List<BluetoothService> services = await dev.discoverServices();
-      for (var s in services) {
-        for (var c in s.characteristics) {
-          if (c.uuid == characteristicUuid) {
-            _bleCharacteristic = c;
-            break;
-          }
-        }
-      }
-
-      if (_bleCharacteristic == null) {
-        await dev.disconnect();
-        isConnectingNotifier.value = false;
-        statusTextNotifier.value = 'Característica no encontrada';
-        return;
-      }
-
-      packetsSentNotifier.value = 0;
-      isConnectingNotifier.value = false;
-      isConnectedNotifier.value = true;
-      statusTextNotifier.value = '¡CONECTADO AL ESP32!';
+      await _setupConnectedDevice(dev);
     } catch (e) {
       await disconnect();
       isConnectingNotifier.value = false;
       statusTextNotifier.value = 'Error BLE: $e';
     }
+  }
+
+  Future<void> _setupConnectedDevice(BluetoothDevice dev) async {
+    _connectedDevice = dev;
+    _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = dev.connectionState.listen((state) {
+      if (state == BluetoothConnectionState.disconnected) {
+        _handleDisconnected();
+      }
+    });
+
+    List<BluetoothService> services = await dev.discoverServices();
+    for (var s in services) {
+      for (var c in s.characteristics) {
+        if (c.uuid == characteristicUuid) {
+          _bleCharacteristic = c;
+          break;
+        }
+      }
+    }
+
+    if (_bleCharacteristic == null) {
+      await dev.disconnect();
+      isConnectingNotifier.value = false;
+      statusTextNotifier.value = 'Característica no encontrada';
+      return;
+    }
+
+    packetsSentNotifier.value = 0;
+    isConnectingNotifier.value = false;
+    isConnectedNotifier.value = true;
+    statusTextNotifier.value = '¡CONECTADO AL ESP32!';
   }
 
   Future<void> sendPacketBytes(Uint8List bytes) async {

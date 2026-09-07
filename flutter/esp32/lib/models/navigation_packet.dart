@@ -10,8 +10,16 @@ enum TurnIcon {
   slightLeft(5),
   sharpRight(6),
   sharpLeft(7),
-  roundabout(8),
-  arrived(9);
+  roundaboutExit1(8),
+  arrived(9),
+  roundaboutExit2(10),
+  roundaboutExit3(11),
+  roundaboutExit4(12),
+  uTurn(13),
+  forkRight(14),
+  forkLeft(15),
+  onRamp(16),
+  offRamp(17);
 
   final int value;
   const TurnIcon(this.value);
@@ -19,14 +27,18 @@ enum TurnIcon {
 
 class NavigationPacket {
   final int packetType;
-  final int navState; // 0 = Idle (Sin Navegación), 1 = Active Navigation, 2 = Arrived
+  final int navState; // 0 = Idle, 1 = Active Navigation, 2 = Arrived
   final TurnIcon turnIcon;
   final int distanceMeters;
   final int totalRemainingMeters;
   final int speedKmh;
-  final int headingDeg;
+  final int headingDeg;        // Ángulo relativo hacia próxima maniobra
+  final int vehicleHeadingDeg; // Rumbo real de brújula del vehículo (0-360)
   final int currentHour;
   final int currentMinute;
+  final int temperatureC;
+  final int weatherCode;
+  final int finalHeadingDeg; // Ángulo relativo hacia el destino final (0-360)
   final String streetName;
 
   NavigationPacket({
@@ -37,14 +49,18 @@ class NavigationPacket {
     required this.totalRemainingMeters,
     required this.speedKmh,
     required this.headingDeg,
+    required this.vehicleHeadingDeg,
     required this.currentHour,
     required this.currentMinute,
+    this.temperatureC = 20,
+    this.weatherCode = 0,
+    this.finalHeadingDeg = 0,
     required this.streetName,
   });
 
-  /// Serializa el paquete a un Uint8List de 28 bytes (coincidente con C++ packed struct)
+  /// Serializa el paquete a un Uint8List de 32 bytes (coincidente con C++ packed struct)
   Uint8List toBytes() {
-    final buffer = ByteData(28);
+    final buffer = ByteData(32);
 
     buffer.setUint8(0, packetType & 0xFF);
     buffer.setUint8(1, navState & 0xFF);
@@ -53,15 +69,19 @@ class NavigationPacket {
     buffer.setUint32(5, totalRemainingMeters.clamp(0, 4294967295), Endian.little);
     buffer.setUint8(9, speedKmh.clamp(0, 255));
     buffer.setUint16(10, headingDeg.clamp(0, 360), Endian.little);
-    buffer.setUint8(12, currentHour.clamp(0, 23));
-    buffer.setUint8(13, currentMinute.clamp(0, 59));
+    buffer.setUint16(12, vehicleHeadingDeg.clamp(0, 360), Endian.little);
+    buffer.setUint8(14, currentHour.clamp(0, 23));
+    buffer.setUint8(15, currentMinute.clamp(0, 59));
+    buffer.setInt8(16, temperatureC.clamp(-50, 50));
+    buffer.setUint8(17, weatherCode.clamp(0, 255));
+    buffer.setUint16(18, finalHeadingDeg.clamp(0, 360), Endian.little);
 
     List<int> encodedStreet = utf8.encode(streetName);
-    for (int i = 0; i < 14; i++) {
-      if (i < encodedStreet.length && i < 13) {
-        buffer.setUint8(14 + i, encodedStreet[i]);
+    for (int i = 0; i < 12; i++) {
+      if (i < encodedStreet.length && i < 11) {
+        buffer.setUint8(20 + i, encodedStreet[i]);
       } else {
-        buffer.setUint8(14 + i, 0);
+        buffer.setUint8(20 + i, 0);
       }
     }
 

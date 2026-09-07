@@ -44,6 +44,8 @@ public:
       NavigationPacket nav;
       size_t copyLen = (len < sizeof(NavigationPacket)) ? len : sizeof(NavigationPacket);
       memcpy(&nav, rxValue.data(), copyLen);
+      // Garantizar que la cadena de texto siempre esté terminada en nulo '\0'
+      nav.streetName[sizeof(nav.streetName) - 1] = '\0';
 
       _manager._latestNavData = nav;
       _manager._hasNewNavData = true;
@@ -108,9 +110,16 @@ public:
 BLEManager::BLEManager(const String &deviceName, IBLEStatusListener *listener)
     : _deviceName(deviceName), _listener(listener),
       _pServer(nullptr), _pService(nullptr), _pCharacteristic(nullptr),
+      _pServerCallbacks(nullptr), _pCharacteristicCallbacks(nullptr),
       _deviceConnected(false), _oldDeviceConnected(false),
       _hasNewSensorData(false), _hasNewNavData(false)
 {
+}
+
+BLEManager::~BLEManager()
+{
+  if (_pServerCallbacks) delete _pServerCallbacks;
+  if (_pCharacteristicCallbacks) delete _pCharacteristicCallbacks;
 }
 
 void BLEManager::setListener(IBLEStatusListener *listener)
@@ -134,7 +143,8 @@ void BLEManager::init()
   BLEDevice::init(_deviceName.c_str());
 
   _pServer = BLEDevice::createServer();
-  _pServer->setCallbacks(new ManagerServerCallbacks(*this));
+  _pServerCallbacks = new ManagerServerCallbacks(*this);
+  _pServer->setCallbacks(_pServerCallbacks);
 
   _pService = _pServer->createService(SERVICE_UUID);
 
@@ -146,7 +156,8 @@ void BLEManager::init()
           BLECharacteristic::PROPERTY_NOTIFY |
           BLECharacteristic::PROPERTY_INDICATE);
 
-  _pCharacteristic->setCallbacks(new ManagerCharacteristicCallbacks(*this));
+  _pCharacteristicCallbacks = new ManagerCharacteristicCallbacks(*this);
+  _pCharacteristic->setCallbacks(_pCharacteristicCallbacks);
   _pCharacteristic->addDescriptor(new BLE2902());
   _pCharacteristic->setValue("0,0,0,0,0,0,0");
 

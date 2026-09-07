@@ -108,6 +108,14 @@ class NavigationEngine {
     _positionSubscription = null;
   }
 
+  int _currentTemperature = 20;
+  int _currentWeatherCode = 0;
+
+  void setWeatherInfo(int tempC, int code) {
+    _currentTemperature = tempC;
+    _currentWeatherCode = code;
+  }
+
   void setCompassHeading(double heading) {
     _currentHeading = heading;
   }
@@ -202,7 +210,23 @@ class NavigationEngine {
       totalRemaining += _activeRoute!.steps[i].distanceMeters;
     }
 
-    // 5. Generar paquete binario para BLE con el icono y calle de la próxima maniobra
+    // 5. Generar paquete binario para BLE con el icono, rumbo relativo y calle de la próxima maniobra
+    double targetBearing = _distanceCalculator.bearing(userPos, targetStep.location);
+    double currentHeading = (_currentHeading.isNaN || _currentHeading.isInfinite) ? 0.0 : _currentHeading;
+    double relativeTargetAngle = (targetBearing - currentHeading + 360.0) % 360.0;
+    if (relativeTargetAngle.isNaN || relativeTargetAngle.isInfinite) relativeTargetAngle = 0.0;
+
+    LatLng? destinationPos = _activeRoute?.polylinePoints.isNotEmpty == true
+        ? _activeRoute!.polylinePoints.last
+        : (_activeRoute?.steps.isNotEmpty == true ? _activeRoute!.steps.last.location : null);
+
+    double relativeFinalAngle = 0.0;
+    if (destinationPos != null) {
+      double finalBearing = _distanceCalculator.bearing(userPos, destinationPos);
+      relativeFinalAngle = (finalBearing - currentHeading + 360.0) % 360.0;
+      if (relativeFinalAngle.isNaN || relativeFinalAngle.isInfinite) relativeFinalAngle = 0.0;
+    }
+
     final now = DateTime.now();
     NavigationPacket packet = NavigationPacket(
       navState: 1, // 1 = Navegación Activa
@@ -210,9 +234,13 @@ class NavigationEngine {
       distanceMeters: distToStep.round(),
       totalRemainingMeters: totalRemaining.round(),
       speedKmh: _currentSpeedKmh.round(),
-      headingDeg: (position.heading > 0) ? position.heading.round() : _currentHeading.round(),
+      headingDeg: relativeTargetAngle.round(),
+      vehicleHeadingDeg: currentHeading.round(),
       currentHour: now.hour,
       currentMinute: now.minute,
+      temperatureC: _currentTemperature,
+      weatherCode: _currentWeatherCode,
+      finalHeadingDeg: relativeFinalAngle.round(),
       streetName: targetStep.streetName,
     );
 
@@ -228,8 +256,11 @@ class NavigationEngine {
       totalRemainingMeters: 0,
       speedKmh: 0,
       headingDeg: _currentHeading.round(),
+      vehicleHeadingDeg: _currentHeading.round(),
       currentHour: now.hour,
       currentMinute: now.minute,
+      temperatureC: _currentTemperature,
+      weatherCode: _currentWeatherCode,
       streetName: '¡Llegaste!',
     );
     onPacketGenerated?.call(packet);

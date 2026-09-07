@@ -29,7 +29,8 @@ class OSRMStep {
     int bearingBefore = (maneuver?['bearing_before'] as num?)?.toInt() ?? 0;
     int bearingAfter = (maneuver?['bearing_after'] as num?)?.toInt() ?? 0;
 
-    TurnIcon icon = _parseManeuverIcon(type, modifier, bearingBefore, bearingAfter);
+    int? exitNumber = (maneuver?['exit'] as num?)?.toInt();
+    TurnIcon icon = _parseManeuverIcon(type, modifier, bearingBefore, bearingAfter, exitNumber);
 
     List<dynamic>? locationArr = maneuver?['location'] as List<dynamic>?;
     double lat = (locationArr != null && locationArr.length >= 2) ? (locationArr[1] as num).toDouble() : 0.0;
@@ -43,9 +44,38 @@ class OSRMStep {
     );
   }
 
-  static TurnIcon _parseManeuverIcon(String type, String modifier, int bearingBefore, int bearingAfter) {
+  static TurnIcon _parseManeuverIcon(String type, String modifier, int bearingBefore, int bearingAfter, int? exitNumber) {
     if (type == 'arrive') return TurnIcon.arrived;
-    if (type == 'roundabout' || type == 'rotary') return TurnIcon.roundabout;
+    if (type == 'uturn' || modifier == 'uturn' || modifier == 'u turn') return TurnIcon.uTurn;
+    if (type == 'fork') {
+      return modifier.contains('left') ? TurnIcon.forkLeft : TurnIcon.forkRight;
+    }
+    if (type == 'on ramp' || type == 'ramp') return TurnIcon.onRamp;
+    if (type == 'off ramp') return TurnIcon.offRamp;
+
+    if (type == 'roundabout' || type == 'rotary' || type == 'roundabout turn') {
+      if (exitNumber != null) {
+        if (exitNumber == 1) return TurnIcon.roundaboutExit1;
+        if (exitNumber == 2) return TurnIcon.roundaboutExit2;
+        if (exitNumber == 3) return TurnIcon.roundaboutExit3;
+        if (exitNumber >= 4) return TurnIcon.roundaboutExit4;
+      }
+      switch (modifier.toLowerCase().trim()) {
+        case 'right':
+        case 'slight right':
+          return TurnIcon.roundaboutExit1;
+        case 'straight':
+          return TurnIcon.roundaboutExit2;
+        case 'left':
+        case 'slight left':
+          return TurnIcon.roundaboutExit3;
+        case 'sharp left':
+        case 'sharp right':
+        case 'uturn':
+          return TurnIcon.roundaboutExit4;
+      }
+      return TurnIcon.roundaboutExit2;
+    }
 
     switch (modifier.toLowerCase().trim()) {
       case 'straight':
@@ -64,10 +94,9 @@ class OSRMStep {
         return TurnIcon.sharpLeft;
       case 'uturn':
       case 'u turn':
-        return TurnIcon.sharpLeft;
+        return TurnIcon.uTurn;
     }
 
-    // Si modifier viene vacío o desconocido, calcular según la diferencia de rumbo (bearingAfter - bearingBefore)
     int turnAngle = (bearingAfter - bearingBefore) % 360;
     if (turnAngle < -180) turnAngle += 360;
     if (turnAngle > 180) turnAngle -= 360;
@@ -100,19 +129,34 @@ class OSRMRoute {
 
 class OSRMService {
   String baseUrl;
+  static const String fallbackBaseUrl = 'https://router.project-osrm.org/route/v1/driving';
 
   OSRMService({
     this.baseUrl = 'https://osrm.oberon360.com/osrm/moto/route/v1/driving',
   });
 
-  Future<OSRMRoute?> fetchRoute(LatLng start, LatLng destination) async {
-    final url = Uri.parse(
-      '$baseUrl/${start.longitude},${start.latitude};${destination.longitude},${destination.latitude}'
-      '?overview=full&geometries=polyline&steps=true',
-    );
+  Future<OSRMRoute?> fetchRoute(LatLng start, LatLng destination, {List<LatLng>? waypoints}) async {
+    List<LatLng> pointsList = [start];
+    if (waypoints != null && waypoints.isNotEmpty) {
+      pointsList.addAll(waypoints);
+    } else {
+      pointsList.add(destination);
+    }
 
+    final coordinatesStr = pointsList.map((p) => '${p.longitude},${p.latitude}').join(';');
+
+    OSRMRoute? route = await _tryFetchUrl('$baseUrl/$coordinatesStr?overview=full&geometries=polyline&steps=true');
+    if (route == null && baseUrl != fallbackBaseUrl) {
+      debugPrint('>> [OSRMService] Servidor principal no respondió. Probando servidor de respaldo público...');
+      route = await _tryFetchUrl('$fallbackBaseUrl/$coordinatesStr?overview=full&geometries=polyline&steps=true');
+    }
+    return route;
+  }
+
+  Future<OSRMRoute?> _tryFetchUrl(String urlStr) async {
     try {
-      final response = await http.get(url).timeout(const Duration(seconds: 10));
+      final url = Uri.parse(urlStr);
+      final response = await http.get(url).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body) as Map<String, dynamic>;
@@ -127,11 +171,13 @@ class OSRMService {
 
           List<OSRMStep> steps = [];
           final legs = firstRoute['legs'] as List<dynamic>?;
-          if (legs != null && legs.isNotEmpty) {
-            final legSteps = legs[0]['steps'] as List<dynamic>?;
-            if (legSteps != null) {
-              for (var s in legSteps) {
-                steps.add(OSRMStep.fromJson(s as Map<String, dynamic>));
+          if (legs != null) {
+            for (var leg in legs) {
+              final legSteps = leg['steps'] as List<dynamic>?;
+              if (legSteps != null) {
+                for (var s in legSteps) {
+                  steps.add(OSRMStep.fromJson(s as Map<String, dynamic>));
+                }
               }
             }
           }
@@ -145,7 +191,7 @@ class OSRMService {
         }
       }
     } catch (e) {
-      debugPrint('Error al consultar OSRM: $e');
+      debugPrint('Error al consultar OSRM ($urlStr): $e');
     }
     return null;
   }

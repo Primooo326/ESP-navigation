@@ -17,6 +17,8 @@ private:
   BLEServer *_pServer;
   BLEService *_pService;
   BLECharacteristic *_pCharacteristic;
+  BLEServerCallbacks *_pServerCallbacks;
+  BLECharacteristicCallbacks *_pCharacteristicCallbacks;
 
   bool _deviceConnected;
   bool _oldDeviceConnected;
@@ -34,7 +36,7 @@ private:
 
 public:
   BLEManager(const String &deviceName, IBLEStatusListener *listener = nullptr);
-  ~BLEManager() = default;
+  ~BLEManager();
 
   void setListener(IBLEStatusListener *listener);
   void init();
