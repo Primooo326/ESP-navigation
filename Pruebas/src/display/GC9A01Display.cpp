@@ -295,16 +295,10 @@ void GC9A01Display::renderNavigationHUDUI(const NavigationPacket &nav)
   _gfx->drawCircle(120, 120, 118, RGB565_DARKGREY);
   _gfx->drawCircle(120, 120, 117, RGB565_DARKGREY);
 
-  // 1. Reloj Top Header (Shadcn Pure White)
-  _gfx->setTextColor(RGB565_WHITE, RGB565_BLACK);
-  _gfx->setTextSize(2);
-  _gfx->setCursor(82, 16);
-  _gfx->printf("%02d:%02d", nav.currentHour, nav.currentMinute);
+  // 1. Icono de maniobra central GIGANTE y centrado (sin reloj top)
+  drawTurnArrow(nav.turnIcon, 120, 55, RGB565_WHITE);
 
-  // 2. Icono de maniobra central (Shadcn White)
-  drawTurnArrow(nav.turnIcon, 120, 72, RGB565_WHITE);
-
-  // 3. Distancia al siguiente giro en gran formato (Shadcn Bold White)
+  // 2. Distancia al siguiente giro en gran formato (Shadcn Bold White)
   _gfx->setTextColor(RGB565_WHITE, RGB565_BLACK);
   _gfx->setTextSize(3);
   char distBuf[16];
@@ -320,10 +314,10 @@ void GC9A01Display::renderNavigationHUDUI(const NavigationPacket &nav)
   int distLen = strlen(distBuf);
   int distX = 120 - (distLen * 9);
   if (distX < 20) distX = 20;
-  _gfx->setCursor(distX, 114);
+  _gfx->setCursor(distX, 108);
   _gfx->print(distBuf);
 
-  // 4. Metros restantes del viaje completo OSRM (Shadcn Zinc sutil)
+  // 3. Metros restantes del viaje completo OSRM (Shadcn Zinc sutil)
   _gfx->setTextColor(RGB565_LIGHTGREY, RGB565_BLACK);
   _gfx->setTextSize(1);
   char totalBuf[24];
@@ -338,22 +332,22 @@ void GC9A01Display::renderNavigationHUDUI(const NavigationPacket &nav)
   int totalLen = strlen(totalBuf);
   int totalX = 120 - (totalLen * 3);
   if (totalX < 15) totalX = 15;
-  _gfx->setCursor(totalX, 144);
+  _gfx->setCursor(totalX, 138);
   _gfx->print(totalBuf);
 
-  // 5. Nombre de la calle (Shadcn White)
+  // 4. Nombre de la calle (Shadcn White)
   _gfx->setTextColor(RGB565_WHITE, RGB565_BLACK);
   _gfx->setTextSize(2);
   int streetLen = strlen(nav.streetName);
   int streetX = 120 - (streetLen * 6);
   if (streetX < 20) streetX = 20;
-  _gfx->setCursor(streetX, 164);
+  _gfx->setCursor(streetX, 160);
   _gfx->printf("%-14s", nav.streetName);
 
-  // 6. Badge de velocidad (Shadcn Amber / Yellow)
+  // 5. Badge de velocidad (Shadcn Amber / Yellow)
   _gfx->setTextColor(RGB565_YELLOW, RGB565_BLACK);
   _gfx->setTextSize(2);
-  _gfx->setCursor(68, 194);
+  _gfx->setCursor(68, 192);
   _gfx->printf("%3d km/h", nav.speedKmh);
 }
 
@@ -441,65 +435,72 @@ void GC9A01Display::renderSensorData(const SensorData &data)
 
 void GC9A01Display::drawTurnArrow(uint8_t turnIcon, int cx, int cy, uint16_t color)
 {
-  // Limpiar área de flecha (box 60x60) en fondo Shadcn Negro
-  _gfx->fillRect(cx - 30, cy - 30, 60, 60, RGB565_BLACK);
+  // Limpiar área de flecha (box 70x70) en fondo Shadcn Negro
+  _gfx->fillRect(cx - 35, cy - 35, 70, 70, RGB565_BLACK);
 
   switch (turnIcon)
   {
   case 1: // STRAIGHT (Recto Shadcn Icon)
-    _gfx->fillTriangle(cx, cy - 26, cx - 16, cy - 6, cx + 16, cy - 6, color);
-    _gfx->fillRect(cx - 6, cy - 6, 12, 28, color);
+    _gfx->fillTriangle(cx, cy - 30, cx - 20, cy - 6, cx + 20, cy - 6, color);
+    _gfx->fillRect(cx - 7, cy - 6, 14, 32, color);
     break;
 
-  case 2: // TURN RIGHT (Giro Derecha)
-    _gfx->fillRect(cx - 20, cy + 2, 22, 10, color);
-    _gfx->fillRect(cx - 2, cy - 14, 10, 26, color);
-    _gfx->fillTriangle(cx + 25, cy - 9, cx + 6, cy - 24, cx + 6, cy + 6, color);
+  case 2: // TURN RIGHT (Giro 90° Derecha)
+    _gfx->fillRect(cx - 18, cy - 4, 14, 30, color);
+    _gfx->fillRect(cx - 18, cy - 16, 26, 14, color);
+    _gfx->fillRect(cx - 4, cy - 16, 22, 14, color);
+    _gfx->fillTriangle(cx + 30, cy - 9, cx + 12, cy - 26, cx + 12, cy + 8, color);
     break;
 
-  case 3: // TURN LEFT (Giro Izquierda)
-    _gfx->fillRect(cx - 2, cy + 2, 22, 10, color);
-    _gfx->fillRect(cx - 8, cy - 14, 10, 26, color);
-    _gfx->fillTriangle(cx - 25, cy - 9, cx - 6, cy - 24, cx - 6, cy + 6, color);
+  case 3: // TURN LEFT (Giro 90° Izquierda)
+    _gfx->fillRect(cx + 4, cy - 4, 14, 30, color);
+    _gfx->fillRect(cx - 8, cy - 16, 26, 14, color);
+    _gfx->fillRect(cx - 18, cy - 16, 22, 14, color);
+    _gfx->fillTriangle(cx - 30, cy - 9, cx - 12, cy - 26, cx - 12, cy + 8, color);
     break;
 
-  case 4: // SLIGHT RIGHT
-    _gfx->fillTriangle(cx + 18, cy - 22, cx + 2, cy - 10, cx + 18, cy + 5, color);
-    _gfx->fillRect(cx - 10, cy - 5, 12, 24, color);
+  case 4: // SLIGHT RIGHT (Giro Suave Derecha 45°)
+    _gfx->fillRect(cx - 14, cy, 14, 26, color);
+    _gfx->fillTriangle(cx - 14, cy + 6, cx + 12, cy - 18, cx - 4, cy + 16, color);
+    _gfx->fillTriangle(cx + 26, cy - 26, cx + 4, cy - 24, cx + 24, cy - 4, color);
     break;
 
-  case 5: // SLIGHT LEFT
-    _gfx->fillTriangle(cx - 18, cy - 22, cx - 2, cy - 10, cx - 18, cy + 5, color);
-    _gfx->fillRect(cx - 2, cy - 5, 12, 24, color);
+  case 5: // SLIGHT LEFT (Giro Suave Izquierda 45°)
+    _gfx->fillRect(cx + 0, cy, 14, 26, color);
+    _gfx->fillTriangle(cx + 14, cy + 6, cx - 12, cy - 18, cx + 4, cy + 16, color);
+    _gfx->fillTriangle(cx - 26, cy - 26, cx - 4, cy - 24, cx - 24, cy - 4, color);
     break;
 
   case 6: // SHARP RIGHT (Giro Pronunciado Derecha)
-    _gfx->fillTriangle(cx + 25, cy - 18, cx + 6, cy - 26, cx + 12, cy + 2, color);
-    _gfx->fillRect(cx - 16, cy + 4, 22, 10, color);
-    _gfx->fillRect(cx - 2, cy - 8, 10, 20, color);
+    _gfx->fillRect(cx - 18, cy - 10, 14, 34, color);
+    _gfx->fillRect(cx - 18, cy - 24, 36, 14, color);
+    _gfx->fillRect(cx + 4, cy - 12, 14, 20, color);
+    _gfx->fillTriangle(cx + 11, cy + 18, cx - 4, cy, cx + 26, cy, color);
     break;
 
   case 7: // SHARP LEFT (Giro Pronunciado Izquierda)
-    _gfx->fillTriangle(cx - 25, cy - 18, cx - 6, cy - 26, cx - 12, cy + 2, color);
-    _gfx->fillRect(cx - 6, cy + 4, 22, 10, color);
-    _gfx->fillRect(cx - 8, cy - 8, 10, 20, color);
+    _gfx->fillRect(cx + 4, cy - 10, 14, 34, color);
+    _gfx->fillRect(cx - 18, cy - 24, 36, 14, color);
+    _gfx->fillRect(cx - 18, cy - 12, 14, 20, color);
+    _gfx->fillTriangle(cx - 11, cy + 18, cx + 4, cy, cx - 26, cy, color);
     break;
 
   case 8: // ROUNDABOUT (Rotonda)
-    _gfx->drawCircle(cx, cy, 18, color);
-    _gfx->drawCircle(cx, cy, 17, color);
-    _gfx->fillTriangle(cx + 12, cy - 16, cx + 4, cy - 26, cx + 22, cy - 24, color);
+    _gfx->drawCircle(cx, cy, 22, color);
+    _gfx->drawCircle(cx, cy, 21, color);
+    _gfx->drawCircle(cx, cy, 20, color);
+    _gfx->fillTriangle(cx + 26, cy - 14, cx + 8, cy - 26, cx + 14, cy - 2, color);
     break;
 
   case 9: // ARRIVED (Destino)
-    _gfx->fillCircle(cx, cy, 18, RGB565_WHITE);
-    _gfx->fillCircle(cx, cy, 10, RGB565_BLACK);
-    _gfx->fillCircle(cx, cy, 4, RGB565_WHITE);
+    _gfx->fillCircle(cx, cy, 22, RGB565_WHITE);
+    _gfx->fillCircle(cx, cy, 14, RGB565_BLACK);
+    _gfx->fillCircle(cx, cy, 6, RGB565_GREEN);
     break;
 
   default: // NONE / DEFAULT (Recto)
-    _gfx->fillTriangle(cx, cy - 22, cx - 14, cy - 4, cx + 14, cy - 4, color);
-    _gfx->fillRect(cx - 5, cy - 4, 10, 24, color);
+    _gfx->fillTriangle(cx, cy - 30, cx - 20, cy - 6, cx + 20, cy - 6, color);
+    _gfx->fillRect(cx - 7, cy - 6, 14, 32, color);
     break;
   }
 }
