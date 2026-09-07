@@ -1,11 +1,9 @@
 #include "display/GC9A01Display.h"
 
-GC9A01Display::GC9A01Display(uint8_t dc, uint8_t cs, uint8_t sclk, uint8_t mosi, int8_t rst, uint8_t bl)
+GC9A01Display::GC9A01Display(uint8_t dc, uint8_t cs, uint8_t sclk, uint8_t mosi, int8_t rst, uint8_t bl, ITouchController *touch)
     : _pinDc(dc), _pinCs(cs), _pinSclk(sclk), _pinMosi(mosi), _pinRst(rst), _pinBl(bl),
-      _bus(nullptr), _gfx(nullptr), _activeView(0), _lastTouchMillis(0), _lastTouchHandledMillis(0),
-      _touchInitialized(false), _sensorUiInitialized(false),
-      _lastNeedleX(120), _lastNeedleY(45), _lastBubbleX(120), _lastBubbleY(120),
-      _hasActiveNavigation(false)
+      _bus(nullptr), _gfx(nullptr), _touchController(touch), _activeView(0), _lastTouchMillis(0),
+      _sensorUiInitialized(false), _lastNeedleX(120), _lastNeedleY(45), _hasActiveNavigation(false)
 {
 }
 
@@ -22,8 +20,10 @@ bool GC9A01Display::begin()
   pinMode(_pinBl, OUTPUT);
   digitalWrite(_pinBl, HIGH);
 
-  // Inicializar I2C para pantalla táctil CST816S (SDA = GPIO 4, SCL = GPIO 5)
-  Wire.begin(4, 5);
+  if (_touchController)
+  {
+    _touchController->begin();
+  }
 
   _bus = new Arduino_ESP32SPI(_pinDc, _pinCs, _pinSclk, _pinMosi, GFX_NOT_DEFINED);
   _gfx = new Arduino_GC9A01(_bus, _pinRst, 0 /* rotación */, true /* IPS */);
@@ -37,47 +37,24 @@ bool GC9A01Display::begin()
   return true;
 }
 
-bool GC9A01Display::readCST816STouch(uint8_t &gesture, uint16_t &x, uint16_t &y)
+void GC9A01Display::drawCenteredText(const String &text, int cy, uint8_t textSize, uint16_t textColor, uint16_t bgColor)
 {
-  Wire.beginTransmission(0x15);
-  Wire.write(0x01);
-  if (Wire.endTransmission(false) != 0)
-  {
-    return false;
-  }
+  if (!_gfx || text.length() == 0)
+    return;
 
-  uint8_t bytesRead = Wire.requestFrom((uint8_t)0x15, (uint8_t)6);
-  if (bytesRead < 6)
-  {
-    return false;
-  }
+  _gfx->setTextSize(textSize);
+  _gfx->setTextColor(textColor, bgColor);
 
-  gesture = Wire.read();        // Reg 0x01: Gesture ID
-  uint8_t points = Wire.read();  // Reg 0x02: Finger count
-  uint8_t xHigh = Wire.read();   // Reg 0x03
-  uint8_t xLow = Wire.read();    // Reg 0x04
-  uint8_t yHigh = Wire.read();   // Reg 0x05
-  uint8_t yLow = Wire.read();    // Reg 0x06
+  int16_t x1, y1;
+  uint16_t w, h;
+  _gfx->getTextBounds(text.c_str(), 0, 0, &x1, &y1, &w, &h);
 
-  x = ((xHigh & 0x0F) << 8) | xLow;
-  y = ((yHigh & 0x0F) << 8) | yLow;
+  int cx = 120 - (w / 2);
+  if (cx < 10)
+    cx = 10;
 
-  bool isCurrentlyTouched = (points == 1 && x < 240 && y < 240);
-
-  static bool wasTouchedPrev = false;
-
-  if (isCurrentlyTouched && !wasTouchedPrev)
-  {
-    wasTouchedPrev = true;
-    return true; // Evento único de toque al presionar (Edge Detection)
-  }
-
-  if (!isCurrentlyTouched)
-  {
-    wasTouchedPrev = false;
-  }
-
-  return false;
+  _gfx->setCursor(cx, cy);
+  _gfx->print(text);
 }
 
 void GC9A01Display::update()
@@ -87,19 +64,16 @@ void GC9A01Display::update()
 
   uint32_t now = millis();
 
-  // 1. Polling Touch CST816S
-  uint8_t gesture = 0;
-  uint16_t x = 0, y = 0;
-  if (readCST816STouch(gesture, x, y))
+  // 1. Delegar lectura táctil a ITouchController (SRP / DIP)
+  if (_touchController)
   {
-    if (now - _lastTouchHandledMillis > 300) // Debounce 300ms
+    uint8_t gesture = 0;
+    uint16_t x = 0, y = 0;
+    if (_touchController->update(gesture, x, y))
     {
-      _lastTouchHandledMillis = now;
       _lastTouchMillis = now;
-
-      // Toggle vista entre Navigation HUD (0) y Reloj/Clima Dashboard (1)
       _activeView = (_activeView == 0) ? 1 : 0;
-      Serial.printf(">> [Touch CST816S] Toque detectado (X:%d, Y:%d, G:%d)! Cambiando vista a: %d\n", x, y, gesture, _activeView);
+      Serial.printf(">> [Display] Touch detectado. Vista cambiada a: %d\n", _activeView);
       renderCurrentView();
     }
   }
@@ -110,7 +84,7 @@ void GC9A01Display::update()
     if (now - _lastTouchMillis > 8000)
     {
       _activeView = 0;
-      Serial.println(">> [Touch] Timeout 8s expiro. Volviendo a Vista 0 (Navegacion HUD).");
+      Serial.println(">> [Display] Timeout 8s expiro. Volviendo a Vista 0 (Navegacion HUD).");
       renderCurrentView();
     }
   }
@@ -190,42 +164,25 @@ void GC9A01Display::renderStatus(const BLEStatus &status)
 void GC9A01Display::renderDisconnectedUI(const BLEStatus &status)
 {
   _gfx->fillCircle(120, 120, 119, RGB565_BLACK);
-
-  // Anillo de borde sutil Shadcn (#27272A)
   _gfx->drawCircle(120, 120, 118, RGB565_DARKGREY);
   _gfx->drawCircle(120, 120, 117, RGB565_DARKGREY);
 
-  // Header Titulo
-  _gfx->setTextColor(RGB565_WHITE, RGB565_BLACK);
-  _gfx->setTextSize(2);
-  _gfx->setCursor(55, 38);
-  _gfx->print("SMART HUD");
+  // 1. Header Título
+  drawCenteredText("SMART HUD", 35, 2, RGB565_WHITE);
+  _gfx->drawFastHLine(45, 60, 150, RGB565_DARKGREY);
 
-  _gfx->drawFastHLine(45, 62, 150, RGB565_DARKGREY);
-
-  // Círculo concéntrico sutil de escaneo BLE
+  // 2. Círculo concéntrico de escaneo BLE
   uint16_t statusColor = getRingColor(status.state);
-  _gfx->drawCircle(120, 108, 28, statusColor);
-  _gfx->drawCircle(120, 108, 14, statusColor);
-  _gfx->fillCircle(120, 108, 5, statusColor);
+  _gfx->drawCircle(120, 105, 28, statusColor);
+  _gfx->drawCircle(120, 105, 14, statusColor);
+  _gfx->fillCircle(120, 105, 5, statusColor);
 
-  // Texto de estado
-  String stateStr = getStateText(status.state);
-  _gfx->setTextColor(statusColor, RGB565_BLACK);
-  _gfx->setTextSize(2);
-  int16_t xPos = 120 - (stateStr.length() * 6);
-  if (xPos < 20) xPos = 20;
-  _gfx->setCursor(xPos, 152);
-  _gfx->print(stateStr);
+  // 3. Texto de estado
+  drawCenteredText(getStateText(status.state), 148, 2, statusColor);
 
-  // Subtexto nombre de dispositivo BLE
-  _gfx->setTextColor(RGB565_LIGHTGREY, RGB565_BLACK);
-  _gfx->setTextSize(1);
+  // 4. Subtexto nombre de dispositivo BLE
   String detailStr = (status.detail.length() > 0) ? status.detail : "ESP32C3_BLE";
-  int16_t detailX = 120 - (detailStr.length() * 3);
-  if (detailX < 15) detailX = 15;
-  _gfx->setCursor(detailX, 180);
-  _gfx->print(detailStr);
+  drawCenteredText(detailStr, 178, 1, RGB565_LIGHTGREY);
 }
 
 // ----------------------------------------------------------------------------
@@ -234,53 +191,33 @@ void GC9A01Display::renderDisconnectedUI(const BLEStatus &status)
 void GC9A01Display::renderDashboardIdleUI(const NavigationPacket &nav)
 {
   _gfx->fillCircle(120, 120, 119, RGB565_BLACK);
-
-  // Anillo de borde en Slate/Zinc sutil (#27272A)
   _gfx->drawCircle(120, 120, 118, RGB565_DARKGREY);
   _gfx->drawCircle(120, 120, 117, RGB565_DARKGREY);
 
   // 1. Header Top Badge: RELOJ & CLIMA / CONECTADO
-  _gfx->setTextColor(RGB565_CYAN, RGB565_BLACK);
-  _gfx->setTextSize(1);
-  _gfx->setCursor(62, 24);
-  _gfx->print("[ RELOJ & CLIMA ]");
+  drawCenteredText("[ RELOJ & CLIMA ]", 25, 1, RGB565_CYAN);
 
   // 2. HORA DIGITAL GIGANTE HORA:MINUTO (Text size 4 Shadcn White)
-  _gfx->setTextColor(RGB565_WHITE, RGB565_BLACK);
-  _gfx->setTextSize(4);
   char clockBuf[10];
   snprintf(clockBuf, sizeof(clockBuf), "%02d:%02d", nav.currentHour, nav.currentMinute);
-  int clockX = 120 - (strlen(clockBuf) * 12);
-  _gfx->setCursor(clockX, 75);
-  _gfx->print(clockBuf);
+  drawCenteredText(clockBuf, 70, 4, RGB565_WHITE);
 
   // 3. SECCIÓN CLIMA - Widget Shadcn Amber & White
-  _gfx->setTextColor(RGB565_YELLOW, RGB565_BLACK);
-  _gfx->setTextSize(2);
-  _gfx->setCursor(55, 125);
-  _gfx->print("21 C"); // Temperatura
-  _gfx->setTextColor(RGB565_WHITE, RGB565_BLACK);
-  _gfx->setCursor(120, 125);
-  _gfx->print("DESPEJADO"); // Estado Clima
+  drawCenteredText("21 C  DESPEJADO", 122, 2, RGB565_YELLOW);
 
   // 4. Rumbo / Brújula central secundaria (Zinc / Lightgrey)
-  _gfx->setTextColor(RGB565_LIGHTGREY, RGB565_BLACK);
-  _gfx->setTextSize(1);
-  _gfx->setCursor(72, 160);
-  _gfx->printf("%3d deg  RUMBO", nav.headingDeg % 360);
+  char headingBuf[24];
+  snprintf(headingBuf, sizeof(headingBuf), "%3d deg  RUMBO", nav.headingDeg % 360);
+  drawCenteredText(headingBuf, 158, 1, RGB565_LIGHTGREY);
 
   // 5. Footer: Estado o aviso de auto-retorno
-  _gfx->setTextColor(RGB565_LIGHTGREY, RGB565_BLACK);
-  _gfx->setTextSize(1);
   if (_hasActiveNavigation)
   {
-    _gfx->setCursor(35, 190);
-    _gfx->print("NAVEGACION ACTIVA (8s)");
+    drawCenteredText("NAVEGACION ACTIVA (8s)", 188, 1, RGB565_LIGHTGREY);
   }
   else
   {
-    _gfx->setCursor(45, 190);
-    _gfx->print("SIN NAVEGACION ACTIVA");
+    drawCenteredText("SIN NAVEGACION ACTIVA", 188, 1, RGB565_LIGHTGREY);
   }
 }
 
@@ -290,17 +227,13 @@ void GC9A01Display::renderDashboardIdleUI(const NavigationPacket &nav)
 void GC9A01Display::renderNavigationHUDUI(const NavigationPacket &nav)
 {
   _gfx->fillCircle(120, 120, 119, RGB565_BLACK);
-
-  // Anillos exteriores en Zinc/Slate sutil (#27272A)
   _gfx->drawCircle(120, 120, 118, RGB565_DARKGREY);
   _gfx->drawCircle(120, 120, 117, RGB565_DARKGREY);
 
-  // 1. Icono de maniobra central GIGANTE y centrado (sin reloj top)
+  // 1. Icono de maniobra central GIGANTE y centrado (cy = 55)
   drawTurnArrow(nav.turnIcon, 120, 55, RGB565_WHITE);
 
   // 2. Distancia al siguiente giro en gran formato (Shadcn Bold White)
-  _gfx->setTextColor(RGB565_WHITE, RGB565_BLACK);
-  _gfx->setTextSize(3);
   char distBuf[16];
   if (nav.distanceMeters >= 1000)
   {
@@ -310,16 +243,9 @@ void GC9A01Display::renderNavigationHUDUI(const NavigationPacket &nav)
   {
     snprintf(distBuf, sizeof(distBuf), "%d m", nav.distanceMeters);
   }
-
-  int distLen = strlen(distBuf);
-  int distX = 120 - (distLen * 9);
-  if (distX < 20) distX = 20;
-  _gfx->setCursor(distX, 108);
-  _gfx->print(distBuf);
+  drawCenteredText(distBuf, 106, 3, RGB565_WHITE);
 
   // 3. Metros restantes del viaje completo OSRM (Shadcn Zinc sutil)
-  _gfx->setTextColor(RGB565_LIGHTGREY, RGB565_BLACK);
-  _gfx->setTextSize(1);
   char totalBuf[24];
   if (nav.totalRemainingMeters >= 1000)
   {
@@ -329,26 +255,17 @@ void GC9A01Display::renderNavigationHUDUI(const NavigationPacket &nav)
   {
     snprintf(totalBuf, sizeof(totalBuf), "Restan: %d m", nav.totalRemainingMeters);
   }
-  int totalLen = strlen(totalBuf);
-  int totalX = 120 - (totalLen * 3);
-  if (totalX < 15) totalX = 15;
-  _gfx->setCursor(totalX, 138);
-  _gfx->print(totalBuf);
+  drawCenteredText(totalBuf, 136, 1, RGB565_LIGHTGREY);
 
   // 4. Nombre de la calle (Shadcn White)
-  _gfx->setTextColor(RGB565_WHITE, RGB565_BLACK);
-  _gfx->setTextSize(2);
-  int streetLen = strlen(nav.streetName);
-  int streetX = 120 - (streetLen * 6);
-  if (streetX < 20) streetX = 20;
-  _gfx->setCursor(streetX, 160);
-  _gfx->printf("%-14s", nav.streetName);
+  char streetBuf[16];
+  snprintf(streetBuf, sizeof(streetBuf), "%-14s", nav.streetName);
+  drawCenteredText(streetBuf, 160, 2, RGB565_WHITE);
 
   // 5. Badge de velocidad (Shadcn Amber / Yellow)
-  _gfx->setTextColor(RGB565_YELLOW, RGB565_BLACK);
-  _gfx->setTextSize(2);
-  _gfx->setCursor(68, 192);
-  _gfx->printf("%3d km/h", nav.speedKmh);
+  char speedBuf[16];
+  snprintf(speedBuf, sizeof(speedBuf), "%3d km/h", nav.speedKmh);
+  drawCenteredText(speedBuf, 190, 2, RGB565_YELLOW);
 }
 
 void GC9A01Display::renderNavigationData(const NavigationPacket &navData)
@@ -358,7 +275,6 @@ void GC9A01Display::renderNavigationData(const NavigationPacket &navData)
 
   _lastNavData = navData;
 
-  // navState: 1 = Navegación Activa, 2 = Llegado al Destino
   if (navData.navState == 1 || navData.navState == 2)
   {
     _hasActiveNavigation = true;
@@ -378,13 +294,10 @@ void GC9A01Display::drawStaticSensorUI()
   _gfx->drawCircle(120, 120, 117, RGB565_DARKGREY);
   _gfx->drawCircle(120, 120, 95, RGB565_DARKGREY);
 
-  _gfx->setTextColor(RGB565_WHITE);
-  _gfx->setTextSize(1);
-  _gfx->setCursor(117, 26);
-  _gfx->print("N");
+  drawCenteredText("N", 26, 1, RGB565_WHITE);
+  drawCenteredText("S", 206, 1, RGB565_LIGHTGREY);
+
   _gfx->setTextColor(RGB565_LIGHTGREY);
-  _gfx->setCursor(117, 206);
-  _gfx->print("S");
   _gfx->setCursor(206, 117);
   _gfx->print("E");
   _gfx->setCursor(26, 117);
@@ -392,8 +305,6 @@ void GC9A01Display::drawStaticSensorUI()
 
   _lastNeedleX = 120;
   _lastNeedleY = 45;
-  _lastBubbleX = 120;
-  _lastBubbleY = 120;
   _sensorUiInitialized = true;
 }
 
@@ -425,22 +336,20 @@ void GC9A01Display::renderSensorData(const SensorData &data)
     _lastNeedleY = newNeedleY;
   }
 
-  _gfx->setTextColor(RGB565_WHITE, RGB565_BLACK);
-  _gfx->setTextSize(2);
-  _gfx->setCursor(70, 45);
+  char headingBuf[16];
   int headingInt = (int)data.heading % 360;
   if (headingInt < 0) headingInt += 360;
-  _gfx->printf("H: %3d%c", headingInt, 247);
+  snprintf(headingBuf, sizeof(headingBuf), "H: %3d deg", headingInt);
+  drawCenteredText(headingBuf, 45, 2, RGB565_WHITE);
 }
 
 void GC9A01Display::drawTurnArrow(uint8_t turnIcon, int cx, int cy, uint16_t color)
 {
-  // Limpiar área de flecha (box 70x70) en fondo Shadcn Negro
   _gfx->fillRect(cx - 35, cy - 35, 70, 70, RGB565_BLACK);
 
   switch (turnIcon)
   {
-  case 1: // STRAIGHT (Recto Shadcn Icon)
+  case 1: // STRAIGHT
     _gfx->fillTriangle(cx, cy - 30, cx - 20, cy - 6, cx + 20, cy - 6, color);
     _gfx->fillRect(cx - 7, cy - 6, 14, 32, color);
     break;
@@ -504,4 +413,3 @@ void GC9A01Display::drawTurnArrow(uint8_t turnIcon, int cx, int cy, uint16_t col
     break;
   }
 }
-

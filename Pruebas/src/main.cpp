@@ -1,9 +1,10 @@
 #include <Arduino.h>
+#include "touch/CST816STouchController.h"
 #include "display/GC9A01Display.h"
 #include "app/Application.h"
 
 // ============================================================================
-// CONFIGURACIÓN HARDWARE PINES GC9A01 (ESP32-C3)
+// CONFIGURACIÓN HARDWARE PINES GC9A01 & CST816S (ESP32-C3)
 // ============================================================================
 #define TFT_SCLK 6
 #define TFT_MOSI 7
@@ -12,16 +13,18 @@
 #define TFT_RST -1
 #define TFT_BL 3
 
+#define TOUCH_SDA 4
+#define TOUCH_SCL 5
+
 // Nombre del Dispositivo BLE visible en Android
 #define DEVICE_NAME "ESP32C3_BLE"
 
 // ============================================================================
-// INYECCIÓN DE DEPENDENCIAS Y PUNTO DE ENTRADA
+// INYECCIÓN DE DEPENDENCIAS (PRINCIPIOS SOLID)
 // ============================================================================
-// Instancia concreta del display GC9A01
-GC9A01Display display(TFT_DC, TFT_CS, TFT_SCLK, TFT_MOSI, TFT_RST, TFT_BL);
+CST816STouchController touchController(TOUCH_SDA, TOUCH_SCL);
+GC9A01Display display(TFT_DC, TFT_CS, TFT_SCLK, TFT_MOSI, TFT_RST, TFT_BL, &touchController);
 
-// La aplicación principal depende únicamente de la abstracción IDisplay
 Application app(display, DEVICE_NAME);
 
 void setup()

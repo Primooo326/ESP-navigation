@@ -1,15 +1,14 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import 'models/navigation_packet.dart';
 import 'services/osrm_service.dart';
 import 'services/navigation_engine.dart';
+import 'services/ble_service.dart';
+import 'services/location_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,11 +24,11 @@ class Esp32HudApp extends StatelessWidget {
       title: 'ESP32 Smart HUD Navigation',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF121212),
+        scaffoldBackgroundColor: const Color(0xFF09090B),
         colorScheme: const ColorScheme.dark(
           primary: Color(0xFF00E676),
           secondary: Color(0xFF00B0FF),
-          surface: Color(0xFF1E1E1E),
+          surface: Color(0xFF18181B),
         ),
       ),
       home: const MainHudScreen(),
@@ -44,41 +43,86 @@ class MainHudScreen extends StatefulWidget {
   State<MainHudScreen> createState() => _MainHudScreenState();
 }
 
-class _MainHudScreenState extends State<MainHudScreen> {
-  static const String targetServiceName = 'ESP32C3_BLE';
-  static final Guid serviceUuid = Guid('4fa1c201-1fb5-459e-8fcc-c5c9c331914b');
-  static final Guid characteristicUuid = Guid('beb5483e-36e1-4688-b7f5-ea07361b26a8');
+class PresetDestination {
+  final String title;
+  final String subtitle;
+  final LatLng location;
+  final IconData icon;
 
-  // Map & Location
+  const PresetDestination({
+    required this.title,
+    required this.subtitle,
+    required this.location,
+    required this.icon,
+  });
+}
+
+class _MainHudScreenState extends State<MainHudScreen> {
+  // Desacoplamiento de Servicios (SOLID - Single Responsibility / Dependency Inversion)
+  final BleService _bleService = BleService();
+  final LocationService _locationService = LocationService();
+  final OSRMService _osrmService = OSRMService();
+  final NavigationEngine _navEngine = NavigationEngine();
+
+  // Mapa y Posición
   final MapController _mapController = MapController();
   LatLng _userPosition = const LatLng(4.60971, -74.08175); // Bogotá por defecto
   LatLng? _destinationPosition;
-  final ValueNotifier<double> _compassHeadingNotifier = ValueNotifier<double>(0.0);
+  String _destinationName = 'Destino seleccionado';
 
-  // Navigation & Services
-  final OSRMService _osrmService = OSRMService();
-  final NavigationEngine _navEngine = NavigationEngine();
+  final ValueNotifier<double> _compassHeadingNotifier = ValueNotifier<double>(0.0);
+  final ValueNotifier<NavigationPacket?> _lastPacketNotifier = ValueNotifier<NavigationPacket?>(null);
+
   OSRMRoute? _currentRoute;
   bool _isLoadingRoute = false;
 
-  // BLE State
-  BluetoothDevice? _connectedDevice;
-  BluetoothCharacteristic? _bleCharacteristic;
-  StreamSubscription<List<ScanResult>>? _scanSubscription;
-  StreamSubscription<BluetoothConnectionState>? _connectionStateSubscription;
   StreamSubscription<CompassEvent>? _compassSubscription;
-  StreamSubscription<Position>? _positionStreamSub;
+  Timer? _bleHeartbeatTimer;
 
-  final ValueNotifier<int> _packetsSentNotifier = ValueNotifier<int>(0);
-  final ValueNotifier<NavigationPacket?> _lastPacketNotifier = ValueNotifier<NavigationPacket?>(null);
-  String _statusText = 'Estado: Desconectado';
-  Color _statusColor = const Color(0xFFFFB74D);
-  bool _isConnecting = false;
+  // Lista de destinos rápidos multilocalización
+  final List<PresetDestination> _presetLocations = const [
+    PresetDestination(
+      title: 'Chapinero Calle 72',
+      subtitle: 'Bogotá Zona Financiera',
+      location: LatLng(4.64862, -74.06284),
+      icon: Icons.business,
+    ),
+    PresetDestination(
+      title: 'Plaza de Bolívar',
+      subtitle: 'Centro Histórico',
+      location: LatLng(4.5981, -74.0760),
+      icon: Icons.account_balance,
+    ),
+    PresetDestination(
+      title: 'Zona Rosa / Calle 85',
+      subtitle: 'Zona T - Chapinero Norte',
+      location: LatLng(4.6669, -74.0538),
+      icon: Icons.local_activity,
+    ),
+    PresetDestination(
+      title: 'Aeropuerto El Dorado',
+      subtitle: 'Terminal Internacional T1',
+      location: LatLng(4.7016, -74.1469),
+      icon: Icons.flight_takeoff,
+    ),
+    PresetDestination(
+      title: 'Parque de la 93',
+      subtitle: 'Chicó - Gastronomía',
+      location: LatLng(4.6766, -74.0482),
+      icon: Icons.park,
+    ),
+    PresetDestination(
+      title: 'Centro Mayor',
+      subtitle: 'Autopista Sur',
+      location: LatLng(4.5714, -74.1221),
+      icon: Icons.shopping_bag,
+    ),
+  ];
 
   @override
   void initState() {
     super.initState();
-    _initAppPermissionsAndLocation();
+    _initAppServices();
     _setupNavEngineCallbacks();
   }
 
@@ -101,26 +145,14 @@ class _MainHudScreenState extends State<MainHudScreen> {
     };
   }
 
-  Future<void> _initAppPermissionsAndLocation() async {
-    await [
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.locationWhenInUse,
-      Permission.locationAlways,
-      Permission.notification,
-    ].request();
-
-    bool locationGranted = await Geolocator.isLocationServiceEnabled();
-    if (locationGranted) {
-      Position pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-      );
-      if (mounted) {
-        setState(() {
-          _userPosition = LatLng(pos.latitude, pos.longitude);
-        });
-        _mapController.move(_userPosition, 15.0);
-      }
+  Future<void> _initAppServices() async {
+    await _locationService.requestPermissions();
+    LatLng? userPos = await _locationService.getCurrentUserPosition();
+    if (userPos != null && mounted) {
+      setState(() {
+        _userPosition = userPos;
+      });
+      _mapController.move(_userPosition, 15.0);
     }
 
     _compassSubscription = FlutterCompass.events?.listen((CompassEvent event) {
@@ -130,11 +162,20 @@ class _MainHudScreenState extends State<MainHudScreen> {
         _navEngine.setCompassHeading(heading);
       }
     });
+
+    _bleService.isConnectedNotifier.addListener(() {
+      if (_bleService.isConnectedNotifier.value) {
+        _startBleHeartbeatTimer();
+      } else {
+        _bleHeartbeatTimer?.cancel();
+      }
+    });
   }
 
-  Future<void> _fetchRouteToDestination(LatLng dest) async {
+  Future<void> _fetchRouteToDestination(LatLng dest, {String? customName}) async {
     setState(() {
       _destinationPosition = dest;
+      _destinationName = customName ?? 'Punto en Mapa (${dest.latitude.toStringAsFixed(3)}, ${dest.longitude.toStringAsFixed(3)})';
       _isLoadingRoute = true;
     });
 
@@ -148,10 +189,15 @@ class _MainHudScreenState extends State<MainHudScreen> {
     });
 
     if (route != null) {
+      if (_navEngine.isNavigating) {
+        // Actualización dinámica de ruta sobre la marcha sin detener el GPS
+        _navEngine.startNavigation(route);
+      }
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Ruta obtenida: ${(route.totalDistanceMeters / 1000).toStringAsFixed(1)} km '
+            'Ruta cargada a $_destinationName: ${(route.totalDistanceMeters / 1000).toStringAsFixed(1)} km '
             '(${(route.totalDurationSeconds / 60).round()} min)',
           ),
           backgroundColor: const Color(0xFF00E676),
@@ -160,7 +206,7 @@ class _MainHudScreenState extends State<MainHudScreen> {
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Error al obtener la ruta del servidor OSRM'),
+          content: Text('Error al obtener la ruta OSRM'),
           backgroundColor: Colors.redAccent,
         ),
       );
@@ -176,7 +222,7 @@ class _MainHudScreenState extends State<MainHudScreen> {
       } else {
         if (_currentRoute == null) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Selecciona primero un destino en el mapa')),
+            const SnackBar(content: Text('Selecciona primero una ubicación o toca el mapa')),
           );
           return;
         }
@@ -188,111 +234,10 @@ class _MainHudScreenState extends State<MainHudScreen> {
     }
   }
 
-  Future<void> _toggleBleConnection() async {
-    if (_connectedDevice != null || _isConnecting) {
-      await _disconnectBle();
-    } else {
-      await _connectBle();
-    }
-  }
-
-  Future<void> _connectBle() async {
-    setState(() {
-      _isConnecting = true;
-      _statusText = 'Buscando ESP32C3_BLE...';
-      _statusColor = const Color(0xFFFFB74D);
-    });
-
-    try {
-      await FlutterBluePlus.stopScan();
-      Completer<BluetoothDevice?> completer = Completer();
-
-      _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
-        for (ScanResult r in results) {
-          if (r.device.platformName == targetServiceName ||
-              r.advertisementData.advName == targetServiceName ||
-              r.advertisementData.serviceUuids.contains(serviceUuid)) {
-            if (!completer.isCompleted) completer.complete(r.device);
-          }
-        }
-      });
-
-      await FlutterBluePlus.startScan(withServices: [serviceUuid], timeout: const Duration(seconds: 8));
-
-      BluetoothDevice? dev = await completer.future.timeout(
-        const Duration(seconds: 8),
-        onTimeout: () => null,
-      );
-
-      await FlutterBluePlus.stopScan();
-      await _scanSubscription?.cancel();
-
-      if (dev == null) {
-        setState(() {
-          _isConnecting = false;
-          _statusText = 'ESP32C3_BLE no encontrado';
-          _statusColor = const Color(0xFFFF5252);
-        });
-        return;
-      }
-
-      setState(() {
-        _statusText = 'Conectando a ESP32-C3...';
-      });
-
-      await dev.connect(timeout: const Duration(seconds: 10));
-      _connectedDevice = dev;
-
-      _connectionStateSubscription = dev.connectionState.listen((state) {
-        if (state == BluetoothConnectionState.disconnected) {
-          _handleBleDisconnected();
-        }
-      });
-
-      List<BluetoothService> services = await dev.discoverServices();
-      for (var s in services) {
-        for (var c in s.characteristics) {
-          if (c.uuid == characteristicUuid) {
-            _bleCharacteristic = c;
-            break;
-          }
-        }
-      }
-
-      if (_bleCharacteristic == null) {
-        await dev.disconnect();
-        setState(() {
-          _isConnecting = false;
-          _statusText = 'Característica no encontrada';
-          _statusColor = const Color(0xFFFF5252);
-        });
-        return;
-      }
-
-      _packetsSentNotifier.value = 0;
-      setState(() {
-        _isConnecting = false;
-        _statusText = '¡CONECTADO AL ESP32-C3!';
-        _statusColor = const Color(0xFF00E676);
-      });
-
-      _startBleHeartbeatTimer();
-    } catch (e) {
-      await _disconnectBle();
-      setState(() {
-        _isConnecting = false;
-        _statusText = 'Error BLE: $e';
-        _statusColor = const Color(0xFFFF5252);
-      });
-    }
-  }
-
-  Timer? _bleHeartbeatTimer;
-
   void _startBleHeartbeatTimer() {
     _bleHeartbeatTimer?.cancel();
     _bleHeartbeatTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_connectedDevice == null || _bleCharacteristic == null) {
+      if (!_bleService.isConnectedNotifier.value) {
         timer.cancel();
         return;
       }
@@ -303,7 +248,7 @@ class _MainHudScreenState extends State<MainHudScreen> {
       if (_navEngine.isNavigating && _currentRoute != null && _currentRoute!.steps.isNotEmpty) {
         int upcomingIndex = (_navEngine.currentStepIndex + 1 < _currentRoute!.steps.length)
             ? _navEngine.currentStepIndex + 1
-            : _navEngine.currentStepIndex;
+            : _currentRoute!.steps.length - 1;
 
         OSRMStep step = _currentRoute!.steps[upcomingIndex];
 
@@ -347,87 +292,106 @@ class _MainHudScreenState extends State<MainHudScreen> {
   }
 
   Future<void> _sendBlePacket(NavigationPacket packet) async {
-    if (_bleCharacteristic != null && _connectedDevice != null) {
-      try {
-        final bytes = packet.toBytes();
-        bool withoutResponse = _bleCharacteristic!.properties.writeWithoutResponse;
-        await _bleCharacteristic!.write(bytes, withoutResponse: withoutResponse);
-        _packetsSentNotifier.value++;
-      } catch (e) {
-        debugPrint('Error enviando paquete BLE a ESP32: $e');
-      }
-    }
+    final bytes = packet.toBytes();
+    await _bleService.sendPacketBytes(bytes);
   }
 
-  Future<void> _disconnectBle() async {
-    _bleHeartbeatTimer?.cancel();
-    _bleHeartbeatTimer = null;
-    _bleCharacteristic = null;
-    await _connectionStateSubscription?.cancel();
-    _connectionStateSubscription = null;
-    if (_connectedDevice != null) {
-      try {
-        await _connectedDevice!.disconnect();
-      } catch (_) {}
-      _connectedDevice = null;
-    }
-    _handleBleDisconnected();
-  }
-
-  void _handleBleDisconnected() {
-    _bleHeartbeatTimer?.cancel();
-    _bleHeartbeatTimer = null;
-    if (mounted) {
-      setState(() {
-        _isConnecting = false;
-        _connectedDevice = null;
-        _bleCharacteristic = null;
-        _statusText = 'Estado: Desconectado';
-        _statusColor = const Color(0xFFFFB74D);
-      });
-    }
+  void _showLocationPickerModal() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF18181B),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Seleccionar Destino Multilocalización',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white70),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+              const Divider(color: Colors.white24),
+              Expanded(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _presetLocations.length,
+                  itemBuilder: (context, index) {
+                    final item = _presetLocations[index];
+                    return ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: const Color(0xFF27272A),
+                        child: Icon(item.icon, color: const Color(0xFF00E676)),
+                      ),
+                      title: Text(item.title, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                      subtitle: Text(item.subtitle, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _mapController.move(item.location, 15.0);
+                        _fetchRouteToDestination(item.location, customName: item.title);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   @override
   void dispose() {
     _bleHeartbeatTimer?.cancel();
     _compassSubscription?.cancel();
-    _positionStreamSub?.cancel();
-    _scanSubscription?.cancel();
-    _connectionStateSubscription?.cancel();
-    _disconnectBle();
+    _bleService.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    bool isConnected = _connectedDevice != null && _bleCharacteristic != null;
-
     return Scaffold(
       appBar: AppBar(
-        title: const Text('ESP32 Smart HUD Navigation', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('ESP32 Smart HUD Navigation', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
         centerTitle: true,
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: const Color(0xFF18181B),
         elevation: 0,
         actions: [
-          IconButton(
-            icon: Icon(
-              isConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-              color: _statusColor,
-            ),
-            onPressed: _toggleBleConnection,
+          ValueListenableBuilder<bool>(
+            valueListenable: _bleService.isConnectedNotifier,
+            builder: (context, isConnected, _) {
+              return IconButton(
+                icon: Icon(
+                  isConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+                  color: isConnected ? const Color(0xFF00E676) : const Color(0xFFFFB74D),
+                ),
+                onPressed: () => _bleService.toggleConnection(),
+              );
+            },
           ),
         ],
       ),
       body: Stack(
         children: [
-          // 1. MAPA INTERACTIVO OPENSTREETMAP
+          // 1. MAPA INTERACTIVO DE SELECCIÓN DE UBICACIÓN
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
               initialCenter: _userPosition,
               initialZoom: 15.0,
               onTap: (tapPosition, point) {
+                // Permite tocar cualquier punto del mapa para seleccionar nuevo destino en todo momento
                 _fetchRouteToDestination(point);
               },
             ),
@@ -448,7 +412,7 @@ class _MainHudScreenState extends State<MainHudScreen> {
                 ),
               MarkerLayer(
                 markers: [
-                  // Marcador Usuario con ValueListenableBuilder para evitar rebuilds de la pantalla
+                  // Marcador Usuario con orientación por brújula
                   Marker(
                     point: _userPosition,
                     width: 40,
@@ -467,65 +431,75 @@ class _MainHudScreenState extends State<MainHudScreen> {
                   if (_destinationPosition != null)
                     Marker(
                       point: _destinationPosition!,
-                      width: 40,
-                      height: 40,
-                      child: const Icon(Icons.location_on, color: Colors.redAccent, size: 40),
+                      width: 44,
+                      height: 44,
+                      child: const Icon(Icons.location_on, color: Colors.redAccent, size: 44),
                     ),
                 ],
               ),
             ],
           ),
 
-          // 2. PANEL TOP BAR - DESTINO RÁPIDO & INDICACIONES
+          // 2. PANEL TOP BAR - BARRA DE CONEXIÓN BLE Y MULTILOCALIZACIÓN
           Positioned(
             top: 16,
             left: 16,
             right: 16,
             child: Card(
-              color: const Color(0xFF1E1E1E).withValues(alpha: 0.92),
+              color: const Color(0xFF18181B).withValues(alpha: 0.94),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               child: Padding(
                 padding: const EdgeInsets.all(12.0),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      'BLE: $_statusText',
-                      style: TextStyle(color: _statusColor, fontWeight: FontWeight.bold, fontSize: 13),
+                    ValueListenableBuilder<String>(
+                      valueListenable: _bleService.statusTextNotifier,
+                      builder: (context, statusText, _) {
+                        return Text(
+                          'BLE: $statusText',
+                          style: TextStyle(
+                            color: _bleService.isConnectedNotifier.value ? const Color(0xFF00E676) : const Color(0xFFFFB74D),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        );
+                      },
                     ),
                     const SizedBox(height: 4),
-                    const Text(
-                      'Toca cualquier punto del mapa para fijar destino OSRM',
-                      style: TextStyle(color: Colors.white70, fontSize: 12),
+                    Text(
+                      _destinationPosition != null ? 'Destino: $_destinationName' : 'Toca el mapa o usa el selector para fijar destino',
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 8),
                     Row(
                       children: [
                         Expanded(
                           child: ElevatedButton.icon(
-                            onPressed: _isLoadingRoute
-                                ? null
-                                : () {
-                                    // Preset Bogotá Centro - Chapinero
-                                    _fetchRouteToDestination(const LatLng(4.64862, -74.06284));
-                                  },
-                            icon: const Icon(Icons.explore, size: 18),
-                            label: const Text('Ruta Demo Chapinero'),
+                            onPressed: _showLocationPickerModal,
+                            icon: const Icon(Icons.place, size: 18),
+                            label: const Text('Destinos Rápido'),
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF2A2A2A),
+                              backgroundColor: const Color(0xFF27272A),
                               foregroundColor: Colors.white,
                             ),
                           ),
                         ),
                         const SizedBox(width: 8),
-                        ElevatedButton.icon(
-                          onPressed: _toggleBleConnection,
-                          icon: Icon(_isConnecting ? Icons.hourglass_top : Icons.bluetooth, size: 18),
-                          label: Text(isConnected ? 'Conectado' : 'BLE ESP32'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: isConnected ? const Color(0xFF00E676) : const Color(0xFFFFB74D),
-                            foregroundColor: Colors.black,
-                          ),
+                        ValueListenableBuilder<bool>(
+                          valueListenable: _bleService.isConnectedNotifier,
+                          builder: (context, isConnected, _) {
+                            return ElevatedButton.icon(
+                              onPressed: () => _bleService.toggleConnection(),
+                              icon: const Icon(Icons.bluetooth, size: 18),
+                              label: Text(isConnected ? 'Conectado' : 'BLE ESP32'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: isConnected ? const Color(0xFF00E676) : const Color(0xFFFFB74D),
+                                foregroundColor: Colors.black,
+                              ),
+                            );
+                          },
                         ),
                       ],
                     ),
@@ -535,7 +509,7 @@ class _MainHudScreenState extends State<MainHudScreen> {
             ),
           ),
 
-          // 3. PANEL BOTTOM SHEET - CONTROL NAVEGACIÓN Y PREVIEW HUD
+          // 3. PANEL BOTTOM SHEET - CONTROL DE NAVEGACIÓN
           Positioned(
             bottom: 0,
             left: 0,
@@ -543,14 +517,13 @@ class _MainHudScreenState extends State<MainHudScreen> {
             child: Container(
               padding: const EdgeInsets.all(16),
               decoration: const BoxDecoration(
-                color: Color(0xFF1E1E1E),
+                color: Color(0xFF18181B),
                 borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
                 boxShadow: [BoxShadow(color: Colors.black54, blurRadius: 10)],
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Banner Preview HUD si hay navegación activa (reactivo sin setState)
                   ValueListenableBuilder<NavigationPacket?>(
                     valueListenable: _lastPacketNotifier,
                     builder: (context, lastPacket, _) {
@@ -562,13 +535,13 @@ class _MainHudScreenState extends State<MainHudScreen> {
                           Container(
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
-                              color: const Color(0xFF2A2A2A),
+                              color: const Color(0xFF27272A),
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(color: const Color(0xFF00E676), width: 1.5),
                             ),
                             child: Row(
                               children: [
-                                const Icon(Icons.turn_right, size: 36, color: Color(0xFF00E676)),
+                                const Icon(Icons.navigation, size: 32, color: Color(0xFF00E676)),
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: Column(
@@ -577,16 +550,16 @@ class _MainHudScreenState extends State<MainHudScreen> {
                                       Text(
                                         '${lastPacket.distanceMeters} m - ${lastPacket.streetName}',
                                         style: const TextStyle(
-                                          fontSize: 16,
+                                          fontSize: 15,
                                           fontWeight: FontWeight.bold,
                                           color: Colors.white,
                                         ),
                                       ),
                                       ValueListenableBuilder<int>(
-                                        valueListenable: _packetsSentNotifier,
+                                        valueListenable: _bleService.packetsSentNotifier,
                                         builder: (context, count, _) {
                                           return Text(
-                                            'Velocidad: ${lastPacket.speedKmh} km/h | Paquetes BLE enviados: $count',
+                                            'Velocidad: ${lastPacket.speedKmh} km/h | Paquetes BLE: $count',
                                             style: const TextStyle(fontSize: 12, color: Colors.white70),
                                           );
                                         },
@@ -602,13 +575,11 @@ class _MainHudScreenState extends State<MainHudScreen> {
                       );
                     },
                   ),
-
-                  // Botón Iniciar / Detener Navegación
                   SizedBox(
                     width: double.infinity,
                     height: 52,
                     child: ElevatedButton.icon(
-                      onPressed: _toggleNavigation,
+                      onPressed: _isLoadingRoute ? null : _toggleNavigation,
                       icon: Icon(
                         _navEngine.isNavigating ? Icons.stop : Icons.navigation,
                         color: Colors.black,
